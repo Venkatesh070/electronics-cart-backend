@@ -1,0 +1,2560 @@
+openapi: 3.0.3
+info:
+  title: Electronics Cart API
+  description: |
+    Ecommerce backend for customer storefront and admin panel.
+    Authenticate with **Authorize** → Bearer JWT from `/api/auth/login` or `/api/auth/register`.
+  version: 1.0.0
+  contact:
+    name: API Support
+
+servers:
+  - url: http://localhost:5000
+    description: Local development
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Profile
+  - name: Addresses
+  - name: Payment Methods
+  - name: Products
+  - name: Categories
+  - name: Brands
+  - name: Search
+  - name: Wishlist
+  - name: Cart
+  - name: Orders
+  - name: Returns
+  - name: Reviews
+  - name: Questions
+  - name: Coupons
+  - name: Gift Cards
+  - name: Notifications
+  - name: Support
+  - name: CMS
+  - name: Blog
+  - name: Banners
+  - name: Flash Sales
+  - name: Newsletter
+  - name: Shipping
+  - name: Admin Dashboard
+  - name: Admin Inventory
+  - name: Admin Customers
+  - name: Admin Marketing
+  - name: Admin Settings
+  - name: Admin Roles
+  - name: Admin Reports
+  - name: Analytics
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Success:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data: {}
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+    RegisterBody:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string, example: John Doe }
+        email: { type: string, format: email, example: john@example.com }
+        password: { type: string, format: password, minLength: 6, example: secret123 }
+        phone: { type: string }
+    LoginBody:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    AddressBody:
+      type: object
+      required: [fullName, line1, city, state, postalCode, country]
+      properties:
+        fullName: { type: string }
+        line1: { type: string }
+        line2: { type: string }
+        city: { type: string }
+        state: { type: string }
+        postalCode: { type: string }
+        country: { type: string }
+        label: { type: string, enum: [home, work, other] }
+        isDefault: { type: boolean }
+    CartItemBody:
+      type: object
+      required: [productId]
+      properties:
+        productId: { type: string }
+        quantity: { type: integer, minimum: 1, default: 1 }
+    CreateOrderBody:
+      type: object
+      properties:
+        addressId: { type: string, description: Saved address id }
+        shippingAddress:
+          $ref: '#/components/schemas/AddressBody'
+        deliverySlot: { type: string, example: tomorrow-morning }
+        paymentMethod: { type: string, example: UPI, description: card | UPI | netbanking | wallet | COD | EMI }
+    ProductCreate:
+      type: object
+      required: [name, description, price, category, brand]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        images: { type: array, items: { type: string } }
+        video: { type: string }
+        category: { type: string }
+        brand: { type: string }
+        stock: { type: integer }
+        status: { type: string, enum: [draft, published, archived] }
+        variants: { type: array, items: { type: object } }
+        specifications: { type: object }
+        boxContents: { type: array, items: { type: string } }
+        warranty: { type: string }
+        seo: { type: object }
+    OrderStatus:
+      type: string
+      enum: [pending, confirmed, paid, shipped, out_for_delivery, delivered, cancelled]
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+security: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterBody'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get JWT
+      description: |
+        Email/password login. When Firebase is configured (`FIREBASE_API_KEY` + service account),
+        credentials are verified via Firebase Identity Toolkit. Otherwise falls back to local password hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginBody'
+      responses:
+        '200':
+          description: JWT + user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+
+  /api/auth/firebase:
+    post:
+      tags: [Auth]
+      summary: Sign in with Firebase ID token
+      description: |
+        Accepts a Firebase ID token from Google, phone OTP, or email/password client sign-in.
+        Creates or links the local user and returns an app JWT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken: { type: string, description: Firebase ID token from client SDK }
+                name: { type: string, description: Optional display name for first-time users }
+      responses:
+        '200':
+          description: Existing user signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+        '201':
+          description: New user created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+
+  /api/users/me:
+    put:
+      tags: [Profile]
+      summary: Update profile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                phone: { type: string }
+                dob: { type: string, format: date }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Success'
+
+  /api/users/me/password:
+    put:
+      tags: [Profile]
+      summary: Change password
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string }
+      responses:
+        '200':
+          description: Password updated
+
+  /api/users/me/notification-preferences:
+    put:
+      tags: [Profile]
+      summary: Update notification preferences
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderUpdates: { type: boolean }
+                priceDrops: { type: boolean }
+                promotions: { type: boolean }
+                supportReplies: { type: boolean }
+      responses:
+        '200':
+          description: Preferences updated
+
+  /api/addresses:
+    get:
+      tags: [Addresses]
+      summary: List addresses
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Address list
+    post:
+      tags: [Addresses]
+      summary: Create address
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressBody'
+      responses:
+        '201':
+          description: Created
+
+  /api/addresses/{id}:
+    put:
+      tags: [Addresses]
+      summary: Update address
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressBody'
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Addresses]
+      summary: Delete address
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/payment-methods:
+    get:
+      tags: [Payment Methods]
+      summary: List saved payment methods
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Methods
+    post:
+      tags: [Payment Methods]
+      summary: Add payment method
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, token]
+              properties:
+                type: { type: string, example: card }
+                token: { type: string }
+                isDefault: { type: boolean }
+      responses:
+        '201':
+          description: Created
+
+  /api/payment-methods/{id}/default:
+    put:
+      tags: [Payment Methods]
+      summary: Set default payment method
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+
+  /api/payment-methods/{id}:
+    delete:
+      tags: [Payment Methods]
+      summary: Remove payment method
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/products:
+    get:
+      tags: [Products]
+      summary: Product listing (PLP)
+      parameters:
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: brand
+          schema: { type: string }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: minPrice
+          schema: { type: number }
+        - in: query
+          name: maxPrice
+          schema: { type: number }
+        - in: query
+          name: minRating
+          schema: { type: number }
+        - in: query
+          name: inStock
+          schema: { type: string, enum: ['true'] }
+        - in: query
+          name: sort
+          schema: { type: string, enum: [price_asc, price_desc, popularity, newest, rating] }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [draft, published, archived] }
+      responses:
+        '200':
+          description: Paginated products
+    post:
+      tags: [Products]
+      summary: Create product (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '201':
+          description: Created
+
+  /api/products/compare:
+    get:
+      tags: [Products]
+      summary: Compare up to 4 products
+      parameters:
+        - in: query
+          name: ids
+          required: true
+          schema: { type: string }
+          description: Comma-separated product ids
+      responses:
+        '200':
+          description: Comparison rows
+
+  /api/products/low-stock:
+    get:
+      tags: [Products]
+      summary: Low stock products (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Low stock list
+
+  /api/products/slug/{slug}:
+    get:
+      tags: [Products]
+      summary: Get product by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Product
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/products/{id}:
+    get:
+      tags: [Products]
+      summary: Get product by id
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Product
+    put:
+      tags: [Products]
+      summary: Update product (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Products]
+      summary: Delete product (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/products/{id}/related:
+    get:
+      tags: [Products]
+      summary: Related products
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Related list
+
+  /api/products/bulk-status:
+    put:
+      tags: [Products]
+      summary: Bulk update product status
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+                status: { type: string, enum: [draft, published, archived] }
+      responses:
+        '200':
+          description: Updated
+
+  /api/products/bulk:
+    delete:
+      tags: [Products]
+      summary: Bulk delete products
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/categories:
+    get:
+      tags: [Categories]
+      summary: List category tree
+      responses:
+        '200':
+          description: Categories
+    post:
+      tags: [Categories]
+      summary: Create category (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                image: { type: string }
+                parent: { type: string }
+      responses:
+        '201':
+          description: Created
+
+  /api/categories/reorder:
+    put:
+      tags: [Categories]
+      summary: Reorder categories (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderedIds: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Reordered
+
+  /api/categories/{slug}:
+    get:
+      tags: [Categories]
+      summary: Get category by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Category
+
+  /api/categories/{id}:
+    put:
+      tags: [Categories]
+      summary: Update category (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Categories]
+      summary: Delete category (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/brands:
+    get:
+      tags: [Brands]
+      summary: List brands
+      responses:
+        '200':
+          description: Brands
+    post:
+      tags: [Brands]
+      summary: Create brand (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/brands/{slug}:
+    get:
+      tags: [Brands]
+      summary: Get brand by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Brand
+
+  /api/brands/{id}:
+    put:
+      tags: [Brands]
+      summary: Update brand (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Brands]
+      summary: Delete brand (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/search/autocomplete:
+    get:
+      tags: [Search]
+      summary: Autocomplete suggestions
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Suggestions
+
+  /api/search/trending:
+    get:
+      tags: [Search]
+      summary: Trending searches
+      responses:
+        '200':
+          description: Trending queries
+
+  /api/search/recent:
+    get:
+      tags: [Search]
+      summary: Recent searches
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Recent queries
+
+  /api/search/log:
+    post:
+      tags: [Search]
+      summary: Log a search
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query: { type: string }
+                resultsCount: { type: integer }
+      responses:
+        '201':
+          description: Logged
+
+  /api/wishlist:
+    get:
+      tags: [Wishlist]
+      summary: Get wishlist
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Wishlist
+
+  /api/wishlist/items:
+    post:
+      tags: [Wishlist]
+      summary: Add to wishlist
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId]
+              properties:
+                productId: { type: string }
+      responses:
+        '200':
+          description: Updated wishlist
+
+  /api/wishlist/items/{productId}:
+    delete:
+      tags: [Wishlist]
+      summary: Remove from wishlist
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated wishlist
+
+  /api/wishlist/items/{productId}/move-to-cart:
+    post:
+      tags: [Wishlist]
+      summary: Move wishlist item to cart
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Moved
+
+  /api/wishlist/shared/{wishlistId}:
+    get:
+      tags: [Wishlist]
+      summary: Shared wishlist
+      parameters:
+        - in: path
+          name: wishlistId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Shared wishlist
+
+  /api/cart:
+    get:
+      tags: [Cart]
+      summary: Get cart
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Cart
+    delete:
+      tags: [Cart]
+      summary: Clear cart
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Cleared
+
+  /api/cart/summary:
+    get:
+      tags: [Cart]
+      summary: Cart price breakdown
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: state
+          schema: { type: string }
+          description: State for tax/shipping
+      responses:
+        '200':
+          description: Summary
+
+  /api/cart/recommendations:
+    get:
+      tags: [Cart]
+      summary: Cross-sell recommendations
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Products
+
+  /api/cart/items:
+    post:
+      tags: [Cart]
+      summary: Add item to cart
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CartItemBody'
+      responses:
+        '200':
+          description: Cart updated
+
+  /api/cart/items/{productId}:
+    put:
+      tags: [Cart]
+      summary: Update item quantity
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Cart]
+      summary: Remove item
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Removed
+
+  /api/cart/items/{productId}/move-to-wishlist:
+    post:
+      tags: [Cart]
+      summary: Move cart item to wishlist
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Moved
+
+  /api/cart/coupon:
+    post:
+      tags: [Cart]
+      summary: Apply coupon
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Applied
+    delete:
+      tags: [Cart]
+      summary: Remove coupon
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Removed
+
+  /api/cart/gift-card:
+    post:
+      tags: [Cart]
+      summary: Apply gift card
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Applied
+
+  /api/cart/gift-card/{code}:
+    delete:
+      tags: [Cart]
+      summary: Remove gift card
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Removed
+
+  /api/orders:
+    get:
+      tags: [Orders]
+      summary: My order history
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Orders
+    post:
+      tags: [Orders]
+      summary: Place order from cart
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderBody'
+      responses:
+        '201':
+          description: Order created
+
+  /api/orders/admin:
+    get:
+      tags: [Orders]
+      summary: Admin order list
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+        - in: query
+          name: paymentMethod
+          schema: { type: string }
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Paginated orders
+
+  /api/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Order detail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Order
+
+  /api/orders/{id}/tracking:
+    get:
+      tags: [Orders]
+      summary: Order tracking timeline
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tracking
+
+  /api/orders/{id}/invoice:
+    get:
+      tags: [Orders]
+      summary: Order invoice
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Invoice payload
+
+  /api/orders/{id}/cancel:
+    post:
+      tags: [Orders]
+      summary: Cancel order
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Cancelled
+
+  /api/orders/{id}/reorder:
+    post:
+      tags: [Orders]
+      summary: Reorder into cart
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Cart updated
+
+  /api/orders/{id}/status:
+    put:
+      tags: [Orders]
+      summary: Update order status (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  $ref: '#/components/schemas/OrderStatus'
+                note: { type: string }
+                courier: { type: string }
+                trackingId: { type: string }
+                url: { type: string }
+      responses:
+        '200':
+          description: Updated
+
+  /api/returns:
+    get:
+      tags: [Returns]
+      summary: My returns
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Returns
+    post:
+      tags: [Returns]
+      summary: Request return/exchange
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, productId, reason, resolution]
+              properties:
+                orderId: { type: string }
+                productId: { type: string }
+                quantity: { type: integer }
+                reason: { type: string }
+                resolution: { type: string, enum: [refund, replacement] }
+      responses:
+        '201':
+          description: Created
+
+  /api/returns/admin:
+    get:
+      tags: [Returns]
+      summary: Admin return queue
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Returns
+
+  /api/returns/{id}:
+    get:
+      tags: [Returns]
+      summary: Return detail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Return
+
+  /api/returns/{id}/status:
+    put:
+      tags: [Returns]
+      summary: Update return status (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+
+  /api/reviews/product/{productId}:
+    get:
+      tags: [Reviews]
+      summary: Product reviews
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Reviews
+
+  /api/reviews/mine:
+    get:
+      tags: [Reviews]
+      summary: My reviews
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Reviews
+
+  /api/reviews/pending-prompts:
+    get:
+      tags: [Reviews]
+      summary: Pending review prompts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Delivered orders awaiting review
+
+  /api/reviews:
+    get:
+      tags: [Reviews]
+      summary: Moderation queue (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Queue
+    post:
+      tags: [Reviews]
+      summary: Create review
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, rating]
+              properties:
+                productId: { type: string }
+                orderId: { type: string }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                text: { type: string }
+                photos: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: Created
+
+  /api/reviews/{id}:
+    put:
+      tags: [Reviews]
+      summary: Edit my review
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Reviews]
+      summary: Delete my review
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/reviews/{id}/report:
+    post:
+      tags: [Reviews]
+      summary: Report a review
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Reported
+
+  /api/reviews/{id}/moderate:
+    put:
+      tags: [Reviews]
+      summary: Moderate review (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Moderated
+
+  /api/questions/product/{productId}:
+    get:
+      tags: [Questions]
+      summary: Product Q&A
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Questions
+
+  /api/questions:
+    post:
+      tags: [Questions]
+      summary: Ask a question
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, question]
+              properties:
+                productId: { type: string }
+                question: { type: string }
+      responses:
+        '201':
+          description: Created
+
+  /api/questions/{id}/answer:
+    put:
+      tags: [Questions]
+      summary: Answer question (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Answered
+
+  /api/coupons/validate:
+    post:
+      tags: [Coupons]
+      summary: Validate coupon
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Validation result
+
+  /api/coupons:
+    get:
+      tags: [Coupons]
+      summary: List coupons (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Coupons
+    post:
+      tags: [Coupons]
+      summary: Create coupon (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/coupons/{id}:
+    put:
+      tags: [Coupons]
+      summary: Update coupon (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Coupons]
+      summary: Delete coupon (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/gift-cards/denominations:
+    get:
+      tags: [Gift Cards]
+      summary: Gift card denominations
+      responses:
+        '200':
+          description: Catalog
+    post:
+      tags: [Gift Cards]
+      summary: Create denomination (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/gift-cards/denominations/{id}:
+    delete:
+      tags: [Gift Cards]
+      summary: Delete denomination (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/gift-cards/balance/{code}:
+    get:
+      tags: [Gift Cards]
+      summary: Lookup gift card balance
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Balance
+
+  /api/gift-cards/redeem:
+    post:
+      tags: [Gift Cards]
+      summary: Redeem gift card
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Redeemed
+
+  /api/gift-cards:
+    get:
+      tags: [Gift Cards]
+      summary: Issued gift cards (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Cards
+    post:
+      tags: [Gift Cards]
+      summary: Issue gift card (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Issued
+
+  /api/gift-cards/{id}/void:
+    put:
+      tags: [Gift Cards]
+      summary: Void gift card (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Voided
+
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Notifications
+
+  /api/notifications/{id}/read:
+    put:
+      tags: [Notifications]
+      summary: Mark notification read
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+
+  /api/notifications/read-all:
+    put:
+      tags: [Notifications]
+      summary: Mark all read
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Updated
+
+  /api/faqs:
+    get:
+      tags: [Support]
+      summary: List FAQs
+      responses:
+        '200':
+          description: FAQs
+    post:
+      tags: [Support]
+      summary: Create FAQ (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/faqs/{id}:
+    put:
+      tags: [Support]
+      summary: Update FAQ (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Support]
+      summary: Delete FAQ (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/tickets:
+    get:
+      tags: [Support]
+      summary: My tickets
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Tickets
+    post:
+      tags: [Support]
+      summary: Raise support ticket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject]
+              properties:
+                subject: { type: string }
+                message: { type: string }
+                orderId: { type: string }
+                channel: { type: string, enum: [web, chat, whatsapp, email] }
+      responses:
+        '201':
+          description: Created
+
+  /api/tickets/admin:
+    get:
+      tags: [Support]
+      summary: Admin ticket list
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Tickets
+
+  /api/tickets/{id}:
+    get:
+      tags: [Support]
+      summary: Ticket detail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ticket
+
+  /api/tickets/{id}/messages:
+    post:
+      tags: [Support]
+      summary: Reply on ticket
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Message added
+
+  /api/tickets/{id}/close:
+    put:
+      tags: [Support]
+      summary: Close ticket (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Closed
+
+  /api/pages/admin:
+    get:
+      tags: [CMS]
+      summary: List CMS pages (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Pages
+
+  /api/pages/{slug}:
+    get:
+      tags: [CMS]
+      summary: Get page by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Page
+
+  /api/pages:
+    post:
+      tags: [CMS]
+      summary: Create page (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/pages/{id}:
+    put:
+      tags: [CMS]
+      summary: Update page (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [CMS]
+      summary: Delete page (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/homepage-blocks:
+    get:
+      tags: [CMS]
+      summary: Active homepage blocks
+      responses:
+        '200':
+          description: Blocks
+    post:
+      tags: [CMS]
+      summary: Create homepage block (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/homepage-blocks/admin:
+    get:
+      tags: [CMS]
+      summary: All homepage blocks (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Blocks
+
+  /api/homepage-blocks/{id}:
+    put:
+      tags: [CMS]
+      summary: Update homepage block (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [CMS]
+      summary: Delete homepage block (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/blog:
+    get:
+      tags: [Blog]
+      summary: Blog listing
+      responses:
+        '200':
+          description: Posts
+    post:
+      tags: [Blog]
+      summary: Create post (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/blog/admin:
+    get:
+      tags: [Blog]
+      summary: All posts (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Posts
+
+  /api/blog/{slug}:
+    get:
+      tags: [Blog]
+      summary: Blog post by slug
+      parameters:
+        - in: path
+          name: slug
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Post
+
+  /api/blog/{id}:
+    put:
+      tags: [Blog]
+      summary: Update post (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Blog]
+      summary: Delete post (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/banners:
+    get:
+      tags: [Banners]
+      summary: Active banners
+      responses:
+        '200':
+          description: Banners
+    post:
+      tags: [Banners]
+      summary: Create banner (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/banners/admin:
+    get:
+      tags: [Banners]
+      summary: All banners (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Banners
+
+  /api/banners/{id}:
+    put:
+      tags: [Banners]
+      summary: Update banner (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Banners]
+      summary: Delete banner (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/flash-sales:
+    get:
+      tags: [Flash Sales]
+      summary: Active flash sales
+      responses:
+        '200':
+          description: Sales
+    post:
+      tags: [Flash Sales]
+      summary: Create flash sale (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/flash-sales/admin:
+    get:
+      tags: [Flash Sales]
+      summary: All flash sales (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Sales
+
+  /api/flash-sales/{id}/performance:
+    get:
+      tags: [Flash Sales]
+      summary: Flash sale performance (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Performance
+
+  /api/flash-sales/{id}:
+    put:
+      tags: [Flash Sales]
+      summary: Update flash sale (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Flash Sales]
+      summary: Delete flash sale (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/newsletter/subscribe:
+    post:
+      tags: [Newsletter]
+      summary: Subscribe to newsletter
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                source: { type: string }
+      responses:
+        '201':
+          description: Subscribed
+
+  /api/newsletter/unsubscribe:
+    post:
+      tags: [Newsletter]
+      summary: Unsubscribe
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Unsubscribed
+
+  /api/newsletter:
+    get:
+      tags: [Newsletter]
+      summary: List subscribers (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Subscribers
+
+  /api/shipping/estimate:
+    get:
+      tags: [Shipping]
+      summary: Delivery estimate by location
+      parameters:
+        - in: query
+          name: state
+          schema: { type: string }
+        - in: query
+          name: pincode
+          schema: { type: string }
+        - in: query
+          name: subtotal
+          schema: { type: number }
+      responses:
+        '200':
+          description: ETA and fee
+
+  /api/shipping/zones:
+    get:
+      tags: [Shipping]
+      summary: Active shipping zones
+      responses:
+        '200':
+          description: Zones
+
+  /api/admin/dashboard:
+    get:
+      tags: [Admin Dashboard]
+      summary: Admin dashboard KPIs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Dashboard data
+
+  /api/admin/inventory/warehouses:
+    get:
+      tags: [Admin Inventory]
+      summary: List warehouses
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Warehouses
+    post:
+      tags: [Admin Inventory]
+      summary: Create warehouse
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/inventory/low-stock:
+    get:
+      tags: [Admin Inventory]
+      summary: Low stock alerts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Products
+
+  /api/admin/inventory/adjustments:
+    get:
+      tags: [Admin Inventory]
+      summary: Stock adjustment log
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Adjustments
+
+  /api/admin/inventory/adjust:
+    post:
+      tags: [Admin Inventory]
+      summary: Adjust stock
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, change, reason]
+              properties:
+                productId: { type: string }
+                variantSku: { type: string }
+                warehouseId: { type: string }
+                change: { type: integer }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Adjusted
+
+  /api/admin/inventory/{productId}/reorder:
+    post:
+      tags: [Admin Inventory]
+      summary: Flag product reorder
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: productId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Flagged
+
+  /api/admin/customers:
+    get:
+      tags: [Admin Customers]
+      summary: List customers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer }
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Customers
+
+  /api/admin/customers/{id}:
+    get:
+      tags: [Admin Customers]
+      summary: Customer profile
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Profile
+
+  /api/admin/customers/{id}/block:
+    put:
+      tags: [Admin Customers]
+      summary: Block or unblock customer
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isBlocked: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+
+  /api/admin/customers/{id}/notes:
+    post:
+      tags: [Admin Customers]
+      summary: Add customer note
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        '200':
+          description: Notes
+
+  /api/admin/campaigns:
+    get:
+      tags: [Admin Marketing]
+      summary: List campaigns
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Campaigns
+    post:
+      tags: [Admin Marketing]
+      summary: Create campaign
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/campaigns/{id}:
+    put:
+      tags: [Admin Marketing]
+      summary: Update campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Admin Marketing]
+      summary: Delete campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/admin/campaigns/{id}/send:
+    post:
+      tags: [Admin Marketing]
+      summary: Send campaign
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sent
+
+  /api/admin/taxes:
+    get:
+      tags: [Admin Settings]
+      summary: List tax rules
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Tax rules
+    post:
+      tags: [Admin Settings]
+      summary: Create tax rule
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/taxes/{id}:
+    put:
+      tags: [Admin Settings]
+      summary: Update tax rule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Admin Settings]
+      summary: Delete tax rule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/admin/shipping:
+    get:
+      tags: [Admin Settings]
+      summary: List shipping zones (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Zones
+    post:
+      tags: [Admin Settings]
+      summary: Create shipping zone
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/shipping/{id}:
+    put:
+      tags: [Admin Settings]
+      summary: Update shipping zone
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Admin Settings]
+      summary: Delete shipping zone
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/admin/payment-settings:
+    get:
+      tags: [Admin Settings]
+      summary: Payment gateway settings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Gateways
+    put:
+      tags: [Admin Settings]
+      summary: Upsert payment gateway
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Updated
+
+  /api/admin/settings:
+    get:
+      tags: [Admin Settings]
+      summary: System settings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Settings
+    put:
+      tags: [Admin Settings]
+      summary: Update system settings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Updated
+
+  /api/admin/roles:
+    get:
+      tags: [Admin Roles]
+      summary: List admin roles
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Roles
+    post:
+      tags: [Admin Roles]
+      summary: Create role
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/roles/{id}:
+    put:
+      tags: [Admin Roles]
+      summary: Update role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Admin Roles]
+      summary: Delete role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/admin/staff:
+    get:
+      tags: [Admin Roles]
+      summary: List staff accounts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Staff
+    post:
+      tags: [Admin Roles]
+      summary: Create staff account
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/staff/{id}/role:
+    put:
+      tags: [Admin Roles]
+      summary: Assign staff role
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+
+  /api/admin/reports:
+    get:
+      tags: [Admin Reports]
+      summary: Reports export data
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: type
+          schema: { type: string, enum: [sales, inventory, customers, tax] }
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Report rows
+
+  /api/admin/audit-logs:
+    get:
+      tags: [Admin Reports]
+      summary: Audit logs
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Logs
+
+  /api/admin/api-keys:
+    get:
+      tags: [Admin Settings]
+      summary: List API keys
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Keys
+    post:
+      tags: [Admin Settings]
+      summary: Create API key
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created (plaintext shown once)
+
+  /api/admin/api-keys/{id}:
+    delete:
+      tags: [Admin Settings]
+      summary: Revoke API key
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revoked
+
+  /api/admin/webhooks:
+    get:
+      tags: [Admin Settings]
+      summary: List webhooks
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Webhooks
+    post:
+      tags: [Admin Settings]
+      summary: Create webhook
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Created
+
+  /api/admin/webhooks/{id}:
+    put:
+      tags: [Admin Settings]
+      summary: Update webhook
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Updated
+    delete:
+      tags: [Admin Settings]
+      summary: Delete webhook
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  /api/analytics:
+    get:
+      tags: [Analytics]
+      summary: Analytics (top products, conversion, searches)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Analytics payload
