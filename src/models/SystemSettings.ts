@@ -8,6 +8,8 @@ export interface ISystemSettings extends Document {
   locale: string;
   timezone: string;
   maintenanceMode: boolean;
+  /** Seller GSTIN for Shiprocket / tax invoices (orders over ₹50k). */
+  sellerGstin?: string;
 }
 
 const systemSettingsSchema = new Schema<ISystemSettings>(
@@ -18,6 +20,7 @@ const systemSettingsSchema = new Schema<ISystemSettings>(
     locale: { type: String, default: "en-IN" },
     timezone: { type: String, default: "Asia/Kolkata" },
     maintenanceMode: { type: Boolean, default: false },
+    sellerGstin: { type: String, trim: true },
   },
   { timestamps: true }
 );

@@ -1,6 +1,8 @@
 import { IOrder } from "../models/Order";
 import { User } from "../models/User";
 import { Product } from "../models/Product";
+import { Address } from "../models/Address";
+import { SystemSettings } from "../models/SystemSettings";
 
 const BASE = "https://apiv2.shiprocket.in/v1/external";
 const HIGH_VALUE = 50_000;
@@ -36,6 +38,23 @@ function digitsPhone(raw?: string): string {
   return d;
 }
 
+/** Prefer order shipping phone, then user phone, then any saved address for that user. */
+async function resolveShippingPhone(order: IOrder): Promise<string> {
+  const addr = order.shippingAddress as IOrder["shippingAddress"] & { phone?: string };
+  let phone = digitsPhone(addr?.phone);
+  if (phone.length >= 10) return phone;
+
+  const user = await User.findById(order.user).select("phone");
+  phone = digitsPhone(user?.phone);
+  if (phone.length >= 10) return phone;
+
+  const saved =
+    (await Address.findOne({ user: order.user, isDefault: true }).select("phone")) ||
+    (await Address.findOne({ user: order.user }).sort({ createdAt: -1 }).select("phone"));
+  phone = digitsPhone(saved?.phone);
+  return phone;
+}
+
 function splitName(fullName: string): { first: string; last: string } {
   const parts = fullName.trim().split(/\s+/);
   return { first: parts[0] || "Customer", last: parts.slice(1).join(" ") || parts[0] || "Customer" };
@@ -58,6 +77,17 @@ function gstSplit(ratePercent: number, pickupState: string, deliveryState: strin
   return { tax: rate, cgst: 0, sgst: 0, igst: rate };
 }
 
+async function resolveSellerGstin(override?: string): Promise<string> {
+  const fromOverride = String(override || "").trim().toUpperCase();
+  if (fromOverride) return fromOverride;
+
+  const fromEnv = String(process.env.SHIPROCKET_GSTIN || "").trim().toUpperCase();
+  if (fromEnv) return fromEnv;
+
+  const settings = await SystemSettings.findOne().select("sellerGstin").lean();
+  return String(settings?.sellerGstin || "").trim().toUpperCase();
+}
+
 export type ShiprocketCreateResult = {
   orderId: string | number;
   shipmentId?: number;
@@ -67,7 +97,10 @@ export type ShiprocketCreateResult = {
 };
 
 /** Create a Shiprocket adhoc order from our shop order. */
-export async function createShiprocketOrder(order: IOrder): Promise<ShiprocketCreateResult> {
+export async function createShiprocketOrder(
+  order: IOrder,
+  opts?: { sellerGstin?: string }
+): Promise<ShiprocketCreateResult> {
   if (process.env.SHIPPING_MOCK === "true") {
     const awb = `MOCK${Date.now().toString().slice(-10)}`;
     return { orderId: `mock_${order._id}`, shipmentId: 0, awb, courier: "Mock Courier", status: "NEW" };
@@ -76,9 +109,16 @@ export async function createShiprocketOrder(order: IOrder): Promise<ShiprocketCr
 
   const user = await User.findById(order.user).select("email phone name");
   const addr = order.shippingAddress as IOrder["shippingAddress"] & { phone?: string; line2?: string };
-  const phone = digitsPhone(addr.phone || user?.phone);
+  let phone = digitsPhone(addr.phone || user?.phone);
+  if (!phone || phone.length < 10) {
+    phone = await resolveShippingPhone(order);
+  }
   if (!phone || phone.length < 10) {
     throw new Error("Shipping phone is required for Shiprocket (10 digits)");
+  }
+  // Persist resolved phone so later pushes / labels don't fail again
+  if (!addr.phone || digitsPhone(addr.phone) !== phone) {
+    order.shippingAddress = { ...order.shippingAddress, phone };
   }
 
   const { first, last } = splitName(addr.fullName || user?.name || "Customer");
@@ -93,11 +133,11 @@ export async function createShiprocketOrder(order: IOrder): Promise<ShiprocketCr
   const defaultGst = Number(process.env.SHIPROCKET_GST_RATE) || 18;
   const defaultHsn = process.env.SHIPROCKET_DEFAULT_HSN || "84713000";
   const pickupState = process.env.SHIPROCKET_PICKUP_STATE || addr.state || "Telangana";
-  const sellerGstin = (process.env.SHIPROCKET_GSTIN || "").trim();
+  const sellerGstin = await resolveSellerGstin(opts?.sellerGstin);
 
   if (order.totalAmount >= HIGH_VALUE && !sellerGstin) {
     throw new Error(
-      "Orders over ₹50,000 need seller GSTIN. Set SHIPROCKET_GSTIN in backend .env (like Flipkart tax invoices)."
+      "Orders over ₹50,000 need seller GSTIN. Add it in System Settings (or SHIPROCKET_GSTIN in .env), or enter it when pushing to Shiprocket."
     );
   }
 
@@ -230,10 +270,13 @@ function applyShiprocketFields(
 }
 
 /** Push order to Shiprocket and persist IDs / AWB on the order doc. Idempotent. */
-export async function pushOrderToShiprocket(order: IOrder, opts?: { force?: boolean }): Promise<IOrder> {
+export async function pushOrderToShiprocket(
+  order: IOrder,
+  opts?: { force?: boolean; sellerGstin?: string }
+): Promise<IOrder> {
   if (order.shiprocket?.orderId && !opts?.force) return order;
 
-  const result = await createShiprocketOrder(order);
+  const result = await createShiprocketOrder(order, { sellerGstin: opts?.sellerGstin });
   applyShiprocketFields(order, {
     orderId: String(result.orderId),
     shipmentId: result.shipmentId != null ? String(result.shipmentId) : undefined,

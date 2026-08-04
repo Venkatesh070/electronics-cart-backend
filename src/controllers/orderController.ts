@@ -5,6 +5,7 @@ import { Product } from "../models/Product";
 import { Coupon } from "../models/Coupon";
 import { GiftCard } from "../models/GiftCard";
 import { Address } from "../models/Address";
+import { SystemSettings } from "../models/SystemSettings";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { computeCouponDiscount } from "../utils/couponPricing";
@@ -48,6 +49,11 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     };
   }
   if (!shippingAddress) throw new ApiError(400, "addressId or shippingAddress is required");
+  const shippingPhone = String(shippingAddress.phone || "").replace(/\D/g, "").slice(-10);
+  if (shippingPhone.length < 10) {
+    throw new ApiError(400, "A valid 10-digit shipping phone is required");
+  }
+  shippingAddress.phone = shippingPhone;
 
   const userId = req.user!._id.toString();
   const cart = await Cart.findOne({ user: userId }).populate("items.product");
@@ -348,7 +354,10 @@ export const getOrderInvoice = asyncHandler(async (req: Request, res: Response) 
       paymentStatus: order.paymentStatus,
       // Flipkart-style GST helpers for invoice PDF
       gstRate: Number(process.env.SHIPROCKET_GST_RATE) || 18,
-      sellerGstin: process.env.SHIPROCKET_GSTIN || "",
+      sellerGstin:
+        process.env.SHIPROCKET_GSTIN ||
+        (await SystemSettings.findOne().select("sellerGstin").lean())?.sellerGstin ||
+        "",
       pickupState: process.env.SHIPROCKET_PICKUP_STATE || "",
       hsn: process.env.SHIPROCKET_DEFAULT_HSN || "84713000",
     },
@@ -430,7 +439,7 @@ export const shipWithShiprocket = asyncHandler(async (req: Request, res: Respons
   if (!order) throw new ApiError(404, "Order not found");
   if (order.status === "cancelled") throw new ApiError(400, "Cannot ship a cancelled order");
 
-  const { force, ewaybillNo, customerGstin } = req.body || {};
+  const { force, ewaybillNo, customerGstin, phone, sellerGstin } = req.body || {};
   if (ewaybillNo != null || customerGstin != null) {
     order.shiprocket = {
       ...(order.shiprocket || {}),
@@ -438,9 +447,26 @@ export const shipWithShiprocket = asyncHandler(async (req: Request, res: Respons
       ...(customerGstin != null ? { customerGstin: String(customerGstin).trim() } : {}),
     };
   }
+  if (phone) {
+    const digits = String(phone).replace(/\D/g, "").slice(-10);
+    if (digits.length < 10) throw new ApiError(400, "Shipping phone must be 10 digits");
+    order.shippingAddress = { ...order.shippingAddress, phone: digits };
+  }
+
+  const gstin = String(sellerGstin || "").trim().toUpperCase();
+  if (gstin) {
+    // Remember for future high-value Shiprocket pushes
+    const settings = await SystemSettings.findOne();
+    if (settings) {
+      settings.sellerGstin = gstin;
+      await settings.save();
+    } else {
+      await SystemSettings.create({ sellerGstin: gstin });
+    }
+  }
 
   try {
-    await pushOrderToShiprocket(order, { force: Boolean(force) });
+    await pushOrderToShiprocket(order, { force: Boolean(force), sellerGstin: gstin || undefined });
   } catch (err) {
     throw new ApiError(502, err instanceof Error ? err.message : "Shiprocket request failed");
   }
