@@ -32,6 +32,7 @@ import { listAuditLogs } from "../../controllers/auditLogController";
 import {
   createCampaign,
   deleteCampaign,
+  getCampaignById,
   listCampaigns,
   sendCampaign,
   updateCampaign,
@@ -62,6 +63,7 @@ router.post("/customers/:id/notes", requirePermission("customers", "edit"), addC
 
 // 13. Marketing campaigns
 router.get("/campaigns", requirePermission("marketing", "view"), listCampaigns);
+router.get("/campaigns/:id", requirePermission("marketing", "view"), getCampaignById);
 router.post("/campaigns", requirePermission("marketing", "edit"), createCampaign);
 router.put("/campaigns/:id", requirePermission("marketing", "edit"), updateCampaign);
 router.delete("/campaigns/:id", requirePermission("marketing", "delete"), deleteCampaign);

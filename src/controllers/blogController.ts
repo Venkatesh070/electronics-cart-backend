@@ -5,26 +5,51 @@ import { ApiError } from "../utils/ApiError";
 import { slugify } from "../utils/slugify";
 
 export const listPosts = asyncHandler(async (req: Request, res: Response) => {
-  const { category, page = "1", limit = "10" } = req.query as Record<string, string>;
+  const { category, q, page = "1", limit = "10" } = req.query as Record<string, string>;
   const filter: Record<string, unknown> = { status: "published" };
   if (category) filter.category = category;
+  if (q?.trim()) {
+    filter.$or = [
+      { title: { $regex: q.trim(), $options: "i" } },
+      { category: { $regex: q.trim(), $options: "i" } },
+    ];
+  }
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 10));
 
-  const [posts, total] = await Promise.all([
+  const [raw, total, categoryAgg] = await Promise.all([
     BlogPost.find(filter)
-      .sort({ publishedAt: -1 })
+      .sort({ publishedAt: -1, createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
-      .select("-content"),
+      .select("title slug category coverImage publishedAt createdAt content")
+      .lean(),
     BlogPost.countDocuments(filter),
+    BlogPost.aggregate([
+      { $match: { status: "published" } },
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]),
   ]);
+
+  const posts = raw.map((post) => {
+    const plain = String(post.content || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const { content: _c, ...rest } = post;
+    return { ...rest, excerpt: plain.slice(0, 160) };
+  });
+
+  const categories = categoryAgg
+    .map((row) => ({ name: row._id as string, count: row.count as number }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   res.json({
     success: true,
     data: posts,
-    pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
+    categories,
+    pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) || 1 },
   });
 });
 

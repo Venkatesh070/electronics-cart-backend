@@ -5,6 +5,61 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { slugify } from "../utils/slugify";
 
+function buildCategoryPayload(body: Record<string, unknown>, { requireName = false } = {}) {
+  const name = body.name as string | undefined;
+  if (requireName && !name) throw new ApiError(400, "name is required");
+
+  const payload: Record<string, unknown> = {};
+
+  if (name !== undefined) payload.name = String(name).trim();
+  if (body.slug !== undefined && String(body.slug).trim()) {
+    payload.slug = slugify(String(body.slug));
+  } else if (name) {
+    payload.slug = slugify(String(name));
+  }
+
+  const copyKeys = [
+    "image",
+    "banner",
+    "shortDescription",
+    "description",
+    "order",
+    "status",
+    "visibility",
+    "showInMenu",
+    "featured",
+    "seo",
+  ] as const;
+
+  for (const key of copyKeys) {
+    if (body[key] !== undefined) payload[key] = body[key];
+  }
+
+  if (body.parent !== undefined) {
+    payload.parent = body.parent || null;
+  }
+
+  if (payload.status) {
+    const status = String(payload.status).toUpperCase();
+    if (!["ACTIVE", "INACTIVE", "DRAFT"].includes(status)) {
+      throw new ApiError(400, "status must be ACTIVE, INACTIVE or DRAFT");
+    }
+    payload.status = status;
+  }
+
+  if (payload.visibility != null) {
+    const visibility = String(payload.visibility).toLowerCase();
+    if (!["public", "private"].includes(visibility)) {
+      throw new ApiError(400, "visibility must be public or private");
+    }
+    payload.visibility = visibility;
+  }
+
+  if (payload.order !== undefined) payload.order = Number(payload.order) || 0;
+
+  return payload;
+}
+
 export const listCategories = asyncHandler(async (req: Request, res: Response) => {
   const categories = await Category.find().sort({ order: 1, name: 1 });
   const counts = await Product.aggregate([
@@ -42,26 +97,21 @@ export const getCategoryBySlug = asyncHandler(async (req: Request, res: Response
   res.json({ success: true, data: category });
 });
 
-export const createCategory = asyncHandler(async (req: Request, res: Response) => {
-  const { name, image, description, parent, order } = req.body;
-  if (!name) throw new ApiError(400, "name is required");
+export const getCategoryById = asyncHandler(async (req: Request, res: Response) => {
+  const category = await Category.findById(req.params.id);
+  if (!category) throw new ApiError(404, "Category not found");
+  res.json({ success: true, data: category });
+});
 
-  const category = await Category.create({
-    name,
-    slug: slugify(name),
-    image,
-    description,
-    parent: parent || null,
-    order,
-  });
+export const createCategory = asyncHandler(async (req: Request, res: Response) => {
+  const payload = buildCategoryPayload(req.body, { requireName: true });
+  const category = await Category.create(payload);
   res.status(201).json({ success: true, data: category });
 });
 
 export const updateCategory = asyncHandler(async (req: Request, res: Response) => {
-  const update = { ...req.body };
-  if (update.name) update.slug = slugify(update.name);
-
-  const category = await Category.findByIdAndUpdate(req.params.id, update, {
+  const payload = buildCategoryPayload(req.body);
+  const category = await Category.findByIdAndUpdate(req.params.id, payload, {
     new: true,
     runValidators: true,
   });

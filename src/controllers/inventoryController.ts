@@ -33,27 +33,73 @@ export const adjustStock = asyncHandler(async (req: Request, res: Response) => {
     throw new ApiError(400, "productId, change and reason are required");
   }
 
-  const product = await Product.findByIdAndUpdate(
-    productId,
-    { $inc: { stock: change } },
-    { new: true }
-  );
+  const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, "Product not found");
+
+  const delta = Number(change);
+  if (!Number.isFinite(delta) || delta === 0) throw new ApiError(400, "change must be a non-zero number");
+
+  let newStock = Number(product.stock) || 0;
+  const sku = variantSku ? String(variantSku).toUpperCase() : undefined;
+
+  if (sku && product.variants?.length) {
+    const variant = product.variants.find((v) => String(v.sku).toUpperCase() === sku);
+    if (!variant) throw new ApiError(404, "Variant not found");
+    const prev = Number(variant.stock) || 0;
+    const next = Math.max(0, prev + delta);
+    const applied = next - prev;
+    variant.stock = next;
+    // Keep parent aggregate in sync with sum of variant stocks
+    product.stock = product.variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+    await product.save();
+    newStock = next;
+
+    const adjustment = await StockAdjustment.create({
+      product: productId,
+      variantSku: sku,
+      warehouse: warehouseId,
+      change: applied,
+      reason,
+      adjustedBy: req.user!._id,
+    });
+
+    if (next <= (Number(variant.minStock) || product.minStock || 0)) {
+      await notifyStaff(
+        "Low stock alert",
+        `${product.name} (${sku}) is at ${next} units.`,
+        product._id.toString()
+      );
+    }
+
+    res.status(201).json({ success: true, data: { adjustment, newStock, productStock: product.stock } });
+    return;
+  }
+
+  const prev = Number(product.stock) || 0;
+  const next = Math.max(0, prev + delta);
+  const applied = next - prev;
+  product.stock = next;
+  await product.save();
+  newStock = next;
 
   const adjustment = await StockAdjustment.create({
     product: productId,
-    variantSku,
+    variantSku: sku,
     warehouse: warehouseId,
-    change,
+    change: applied,
     reason,
     adjustedBy: req.user!._id,
   });
 
   if (product.stock <= product.minStock) {
-    await notifyStaff("Low stock alert", `${product.name} is at ${product.stock} units (threshold ${product.minStock}).`, product._id.toString());
+    await notifyStaff(
+      "Low stock alert",
+      `${product.name} is at ${product.stock} units (threshold ${product.minStock}).`,
+      product._id.toString()
+    );
   }
 
-  res.status(201).json({ success: true, data: { adjustment, newStock: product.stock } });
+  res.status(201).json({ success: true, data: { adjustment, newStock } });
 });
 
 export const listAdjustmentLog = asyncHandler(async (req: Request, res: Response) => {

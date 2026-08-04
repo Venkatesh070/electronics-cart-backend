@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { Order } from "../models/Order";
+import { IOrder, Order } from "../models/Order";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import {
@@ -7,12 +7,17 @@ import {
   getRazorpayKeyId,
   isOnlinePaymentMethod,
   isRazorpayConfigured,
+  isWebhookConfigured,
   toPaise,
   verifyPaymentSignature,
+  verifyWebhookSignature,
 } from "../config/razorpay";
 import { notifyUser } from "../utils/notify";
+import { pushOrderToShiprocket } from "../services/shiprocket";
+import { getEnabledPaymentMethods } from "./paymentSettingsController";
 
 export const getPaymentConfig = asyncHandler(async (_req: Request, res: Response) => {
+  const methods = await getEnabledPaymentMethods();
   res.json({
     success: true,
     data: {
@@ -21,6 +26,7 @@ export const getPaymentConfig = asyncHandler(async (_req: Request, res: Response
       keyId: isRazorpayConfigured() ? getRazorpayKeyId() : null,
       currency: process.env.PAYMENTS_DEFAULT_CURRENCY || "INR",
       mock: process.env.PAYMENTS_MOCK === "true",
+      methods,
     },
   });
 });
@@ -102,6 +108,35 @@ export const createRazorpayOrder = asyncHandler(async (req: Request, res: Respon
   });
 });
 
+/** Marks an order paid and notifies the customer. Idempotent — safe to call twice for the same order. */
+async function markOrderPaid(order: IOrder, razorpayOrderId: string, razorpayPaymentId: string, note: string) {
+  if (order.paymentStatus === "paid") return;
+
+  order.paymentStatus = "paid";
+  order.razorpayOrderId = razorpayOrderId;
+  order.razorpayPaymentId = razorpayPaymentId;
+  order.paymentMethod = order.paymentMethod || "razorpay";
+  if (order.status === "pending") {
+    order.status = "paid";
+    order.statusHistory.push({ status: "paid", note, at: new Date() });
+  }
+  await order.save();
+
+  await notifyUser(
+    order.user.toString(),
+    "order_update",
+    "Payment successful",
+    `Payment received for order #${order._id.toString().slice(-6)}.`,
+    order._id.toString()
+  );
+
+  try {
+    await pushOrderToShiprocket(order);
+  } catch (err) {
+    console.error("Shiprocket push (paid) failed:", err);
+  }
+}
+
 export const verifyRazorpayPayment = asyncHandler(async (req: Request, res: Response) => {
   const {
     orderId,
@@ -143,23 +178,7 @@ export const verifyRazorpayPayment = asyncHandler(async (req: Request, res: Resp
     }
   }
 
-  order.paymentStatus = "paid";
-  order.razorpayOrderId = razorpayOrderId;
-  order.razorpayPaymentId = razorpayPaymentId;
-  order.paymentMethod = order.paymentMethod || "razorpay";
-  if (order.status === "pending") {
-    order.status = "paid";
-    order.statusHistory.push({ status: "paid", note: "Payment received via Razorpay", at: new Date() });
-  }
-  await order.save();
-
-  await notifyUser(
-    order.user.toString(),
-    "order_update",
-    "Payment successful",
-    `Payment received for order #${order._id.toString().slice(-6)}.`,
-    order._id.toString()
-  );
+  await markOrderPaid(order, razorpayOrderId, razorpayPaymentId, "Payment received via Razorpay");
 
   res.json({ success: true, data: order });
 });
@@ -181,4 +200,57 @@ export const markPaymentFailed = asyncHandler(async (req: Request, res: Response
   await order.save();
 
   res.json({ success: true, data: order });
+});
+
+interface RazorpayWebhookPayload {
+  event: string;
+  payload?: {
+    payment?: {
+      entity?: {
+        id?: string;
+        order_id?: string;
+        error_description?: string;
+      };
+    };
+  };
+}
+
+/**
+ * Server-to-server payment confirmation. Without this, an order only gets marked
+ * paid if the customer's browser stays open long enough to call /razorpay/verify —
+ * if the tab closes right after payment, the order is stuck "pending" forever.
+ * Mounted with a raw body parser in app.ts (before express.json()) because the
+ * webhook signature is an HMAC over the exact request bytes Razorpay sent.
+ */
+export const razorpayWebhook = asyncHandler(async (req: Request, res: Response) => {
+  if (!isWebhookConfigured()) {
+    throw new ApiError(501, "Razorpay webhook is not configured");
+  }
+
+  const rawBody = req.body as Buffer;
+  verifyWebhookSignature(rawBody, req.header("x-razorpay-signature"));
+
+  const event = JSON.parse(rawBody.toString("utf8")) as RazorpayWebhookPayload;
+  const payment = event.payload?.payment?.entity;
+  const razorpayOrderId = payment?.order_id;
+  const razorpayPaymentId = payment?.id;
+
+  // Ack unrecognized events / orders so Razorpay stops retrying — there's nothing to reconcile.
+  if (!razorpayOrderId) return res.json({ success: true, ignored: true });
+  const order = await Order.findOne({ razorpayOrderId });
+  if (!order) return res.json({ success: true, ignored: true });
+
+  if ((event.event === "payment.captured" || event.event === "order.paid") && razorpayPaymentId) {
+    await markOrderPaid(order, razorpayOrderId, razorpayPaymentId, "Payment confirmed via Razorpay webhook");
+  } else if (event.event === "payment.failed" && order.paymentStatus !== "paid") {
+    order.paymentStatus = "failed";
+    order.statusHistory.push({
+      status: order.status,
+      note: payment?.error_description || "Payment failed (Razorpay webhook)",
+      at: new Date(),
+    });
+    await order.save();
+  }
+
+  res.json({ success: true });
 });

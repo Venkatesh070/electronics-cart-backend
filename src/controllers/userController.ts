@@ -10,9 +10,21 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
     { $set: { name, phone, dob } },
     { new: true, runValidators: true }
   );
+  if (!user) throw new ApiError(404, "User not found");
   res.json({
     success: true,
-    data: { id: user!._id, name: user!.name, email: user!.email, phone: user!.phone, dob: user!.dob },
+    data: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      dob: user.dob,
+      avatar: user.avatar,
+      createdAt: user.createdAt,
+      verified: Boolean(user.email || user.phone),
+      authProviders: user.authProviders || [],
+      notificationPreferences: user.notificationPreferences,
+    },
   });
 });
 

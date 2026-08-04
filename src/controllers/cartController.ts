@@ -8,6 +8,7 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { computeCouponDiscount } from "../utils/couponPricing";
 import { computeShippingFee, computeTax } from "../utils/orderPricing";
+import { resolveUnitPrice } from "../utils/variants";
 
 async function getOrCreateCart(userId: string) {
   let cart = await Cart.findOne({ user: userId });
@@ -17,6 +18,12 @@ async function getOrCreateCart(userId: string) {
   return cart;
 }
 
+function sameLine(item: { product: { toString(): string }; variantSku?: string }, productId: string, variantSku?: string) {
+  const sku = variantSku ? String(variantSku).toUpperCase() : undefined;
+  const itemSku = item.variantSku ? String(item.variantSku).toUpperCase() : undefined;
+  return item.product.toString() === productId && itemSku === sku;
+}
+
 export const getCart = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!._id.toString());
   await cart.populate("items.product");
@@ -24,19 +31,37 @@ export const getCart = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const addItem = asyncHandler(async (req: Request, res: Response) => {
-  const { productId, quantity = 1 } = req.body;
+  const { productId, quantity = 1, variantSku } = req.body;
   if (!productId) throw new ApiError(400, "productId is required");
 
   const product = await Product.findById(productId);
   if (!product) throw new ApiError(404, "Product not found");
 
+  const resolved = resolveUnitPrice(product, variantSku);
+  if (resolved.stock <= 0) throw new ApiError(400, "Selected option is out of stock");
+  if (product.variants?.length && !resolved.variant) {
+    throw new ApiError(400, "variantSku is required for this product");
+  }
+
+  const sku = resolved.variant?.sku;
   const cart = await getOrCreateCart(req.user!._id.toString());
-  const existingItem = cart.items.find((item) => item.product.toString() === productId);
+  const existingItem = cart.items.find((item) => sameLine(item, productId, sku));
+  const nextQty = (existingItem?.quantity || 0) + Number(quantity || 1);
+  const maxQty = resolved.variant?.maxOrderQty
+    ? Math.min(resolved.stock, resolved.variant.maxOrderQty)
+    : resolved.stock;
+  if (nextQty > maxQty) {
+    throw new ApiError(400, `Only ${maxQty} unit(s) available`);
+  }
 
   if (existingItem) {
-    existingItem.quantity += quantity;
+    existingItem.quantity = nextQty;
   } else {
-    cart.items.push({ product: product._id, quantity });
+    cart.items.push({
+      product: product._id,
+      variantSku: sku,
+      quantity: Number(quantity || 1),
+    });
   }
 
   await cart.save();
@@ -46,13 +71,25 @@ export const addItem = asyncHandler(async (req: Request, res: Response) => {
 
 export const updateItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
-  const { quantity } = req.body;
+  const { quantity, variantSku } = req.body;
 
   if (!quantity || quantity < 1) throw new ApiError(400, "quantity must be at least 1");
 
+  const product = await Product.findById(productId);
+  if (!product) throw new ApiError(404, "Product not found");
+
   const cart = await getOrCreateCart(req.user!._id.toString());
-  const item = cart.items.find((i) => i.product.toString() === productId);
+  const item =
+    cart.items.find((i) => sameLine(i, productId, variantSku ?? i.variantSku)) ||
+    cart.items.find((i) => i.product.toString() === productId);
   if (!item) throw new ApiError(404, "Item not found in cart");
+
+  const resolved = resolveUnitPrice(product, item.variantSku || variantSku);
+  if (resolved.stock <= 0) throw new ApiError(400, "Selected option is out of stock");
+  const maxQty = resolved.variant?.maxOrderQty
+    ? Math.min(resolved.stock, resolved.variant.maxOrderQty)
+    : resolved.stock;
+  if (quantity > maxQty) throw new ApiError(400, `Only ${maxQty} unit(s) available`);
 
   item.quantity = quantity;
   await cart.save();
@@ -62,9 +99,14 @@ export const updateItem = asyncHandler(async (req: Request, res: Response) => {
 
 export const removeItem = asyncHandler(async (req: Request, res: Response) => {
   const { productId } = req.params;
+  const variantSku = typeof req.query.variantSku === "string" ? req.query.variantSku : undefined;
   const cart = await getOrCreateCart(req.user!._id.toString());
 
-  cart.items = cart.items.filter((i) => i.product.toString() !== productId);
+  if (variantSku) {
+    cart.items = cart.items.filter((i) => !sameLine(i, productId, variantSku));
+  } else {
+    cart.items = cart.items.filter((i) => i.product.toString() !== productId);
+  }
 
   await cart.save();
   await cart.populate("items.product");
@@ -92,8 +134,14 @@ export const applyCoupon = asyncHandler(async (req: Request, res: Response) => {
   if (cart.items.length === 0) throw new ApiError(400, "Cart is empty");
 
   const lines = cart.items.map((item) => {
-    const product = item.product as unknown as { _id: string; price: number; category: string };
-    return { product: product._id.toString(), category: product.category?.toString(), price: product.price, quantity: item.quantity };
+    const product = item.product as unknown as Parameters<typeof resolveUnitPrice>[0];
+    const { price } = resolveUnitPrice(product, item.variantSku);
+    return {
+      product: product._id.toString(),
+      category: (product as { category?: { toString(): string } }).category?.toString(),
+      price,
+      quantity: item.quantity,
+    };
   });
   const cartTotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
 
@@ -116,8 +164,14 @@ export const getCartSummary = asyncHandler(async (req: Request, res: Response) =
   await cart.populate("items.product");
 
   const lines = cart.items.map((item) => {
-    const product = item.product as unknown as { _id: string; price: number; category: string };
-    return { product: product._id.toString(), category: product.category?.toString(), price: product.price, quantity: item.quantity };
+    const product = item.product as unknown as Parameters<typeof resolveUnitPrice>[0];
+    const { price } = resolveUnitPrice(product, item.variantSku);
+    return {
+      product: product._id.toString(),
+      category: (product as { category?: { toString(): string } }).category?.toString(),
+      price,
+      quantity: item.quantity,
+    };
   });
   const subtotal = lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
 

@@ -13,7 +13,15 @@ function publicUser(user: {
   role: string;
   authProviders?: string[];
   avatar?: string;
+  createdAt?: Date;
+  notificationPreferences?: {
+    orderUpdates: boolean;
+    priceDrops: boolean;
+    promotions: boolean;
+    supportReplies: boolean;
+  };
 }) {
+  const verified = Boolean(user.email || user.phone);
   return {
     id: user._id,
     name: user.name,
@@ -22,6 +30,14 @@ function publicUser(user: {
     role: user.role,
     authProviders: user.authProviders || [],
     avatar: user.avatar || null,
+    createdAt: user.createdAt || null,
+    verified,
+    notificationPreferences: user.notificationPreferences || {
+      orderUpdates: true,
+      priceDrops: true,
+      promotions: true,
+      supportReplies: true,
+    },
   };
 }
 

@@ -23,9 +23,9 @@ export const listAllBanners = asyncHandler(async (_req: Request, res: Response) 
 });
 
 export const createBanner = asyncHandler(async (req: Request, res: Response) => {
-  const { title, image, startDate, endDate } = req.body;
-  if (!title || !image || !startDate || !endDate) {
-    throw new ApiError(400, "title, image, startDate and endDate are required");
+  const { title, startDate, endDate } = req.body;
+  if (!title || !startDate || !endDate) {
+    throw new ApiError(400, "title, startDate and endDate are required");
   }
 
   const banner = await Banner.create(req.body);

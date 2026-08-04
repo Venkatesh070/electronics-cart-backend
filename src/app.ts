@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import morgan from "morgan";
 import authRoutes from "./routes/authRoutes";
 import userRoutes from "./routes/userRoutes";
@@ -31,18 +32,39 @@ import newsletterRoutes from "./routes/newsletterRoutes";
 import shippingRoutes from "./routes/shippingRoutes";
 import uploadRoutes from "./routes/uploadRoutes";
 import paymentRoutes from "./routes/paymentRoutes";
+import settingsRoutes from "./routes/settingsRoutes";
+import { razorpayWebhook } from "./controllers/paymentController";
 import { setupSwagger } from "./config/swagger";
+import { corsOptions } from "./config/cors";
 import { errorHandler, notFound } from "./middleware/errorHandler";
+import { apiLimiter } from "./middleware/rateLimit";
 import { UPLOAD_ROOT, ensureUploadDirs } from "./middleware/upload";
 
 ensureUploadDirs();
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || "*" }));
+// CSP is disabled: this API also serves Swagger UI (self-hosted assets + inline
+// init script), which a default script-src 'self' policy would break. The other
+// helmet headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.) still apply.
+// crossOriginResourcePolicy is relaxed to cross-origin so /uploads images can be
+// loaded by the admin/storefront apps, which run on separate origins.
+// COOP must allow popups: Firebase Google sign-in uses window.open/close.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  })
+);
+app.use(cors(corsOptions));
+// Mounted before express.json(): the webhook signature is an HMAC over the raw
+// request body, so this one route needs the unparsed bytes, not parsed JSON.
+app.post("/api/payments/razorpay/webhook", express.raw({ type: "application/json" }), razorpayWebhook);
 app.use(express.json());
 app.use(morgan("dev"));
 app.use("/uploads", express.static(UPLOAD_ROOT));
+app.use("/api", apiLimiter);
 
 setupSwagger(app);
 
@@ -78,6 +100,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/settings", settingsRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

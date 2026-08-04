@@ -5,8 +5,17 @@ export type BannerPlacement = "home" | "category";
 export interface IBanner extends Document {
   _id: Types.ObjectId;
   title: string;
-  image: string;
+  titleHighlight?: string;
+  subtitle?: string;
+  badge?: string;
+  buttonText?: string;
+  secondaryButtonText?: string;
+  secondaryLinkTarget?: string;
+  promoText?: string;
+  image?: string;
+  backgroundImage?: string;
   linkTarget?: string;
+  features: string[];
   placement: BannerPlacement;
   startDate: Date;
   endDate: Date;
@@ -17,8 +26,17 @@ export interface IBanner extends Document {
 const bannerSchema = new Schema<IBanner>(
   {
     title: { type: String, required: true },
-    image: { type: String, required: true },
+    titleHighlight: { type: String },
+    subtitle: { type: String },
+    badge: { type: String },
+    buttonText: { type: String },
+    secondaryButtonText: { type: String },
+    secondaryLinkTarget: { type: String },
+    promoText: { type: String },
+    image: { type: String },
+    backgroundImage: { type: String },
     linkTarget: { type: String },
+    features: { type: [String], default: [] },
     placement: { type: String, enum: ["home", "category"], default: "home" },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },

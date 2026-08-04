@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { Cart } from "../models/Cart";
-import { Order, OrderStatus } from "../models/Order";
+import { IOrder, Order, OrderStatus } from "../models/Order";
 import { Product } from "../models/Product";
 import { Coupon } from "../models/Coupon";
 import { GiftCard } from "../models/GiftCard";
@@ -18,9 +18,19 @@ import {
   isRazorpayConfigured,
   toPaise,
 } from "../config/razorpay";
+import { pushOrderToShiprocket, syncShiprocketOrder, getShiprocketLabelUrl, getShiprocketInvoiceUrl } from "../services/shiprocket";
+import { resolveUnitPrice } from "../utils/variants";
+import { IProduct } from "../models/Product";
+import { getEnabledPaymentMethods } from "./paymentSettingsController";
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { addressId, shippingAddress: shippingAddressBody, deliverySlot, paymentMethod } = req.body;
+
+  const enabledMethods = await getEnabledPaymentMethods();
+  const methodId = String(paymentMethod || "").trim() || (enabledMethods[0]?.id ?? "COD");
+  if (!enabledMethods.some((m) => m.id === methodId)) {
+    throw new ApiError(400, "Selected payment method is not available");
+  }
 
   let shippingAddress = shippingAddressBody;
   if (addressId) {
@@ -28,7 +38,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     if (!address) throw new ApiError(404, "Address not found");
     shippingAddress = {
       fullName: address.fullName,
+      phone: address.phone,
       line1: address.line1,
+      line2: address.line2,
       city: address.city,
       state: address.state,
       postalCode: address.postalCode,
@@ -49,36 +61,35 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const lines = [];
 
   for (const item of cart.items) {
-    const product = item.product as unknown as {
-      _id: string;
-      name: string;
-      price: number;
-      stock: number;
-      category: string;
-    } | null;
+    const product = item.product as unknown as IProduct | null;
 
-    // Populate leaves null when the product was deleted
     if (!product || typeof product !== "object" || !("_id" in product)) {
       throw new ApiError(400, "A product in your cart is no longer available. Please refresh your cart.");
     }
 
-    if (product.stock < item.quantity) {
+    const resolved = resolveUnitPrice(product, item.variantSku);
+    if (resolved.stock < item.quantity) {
       throw new ApiError(400, `Insufficient stock for ${product.name}`);
     }
+    const displayName = resolved.variant
+      ? `${product.name} (${resolved.variant.label})`
+      : product.name;
 
     orderItems.push({
       product: product._id,
-      name: product.name,
-      price: product.price,
+      name: displayName,
+      price: resolved.price,
       quantity: item.quantity,
+      variantSku: resolved.variant?.sku,
+      variantLabel: resolved.variant?.label,
     });
     lines.push({
       product: product._id.toString(),
       category: product.category?.toString(),
-      price: product.price,
+      price: resolved.price,
       quantity: item.quantity,
     });
-    subtotal += product.price * item.quantity;
+    subtotal += resolved.price * item.quantity;
   }
 
   let discount = 0;
@@ -94,52 +105,105 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const shippingFee = await computeShippingFee(shippingAddress.state, subtotal - discount);
   const tax = await computeTax(shippingAddress.state, undefined, subtotal - discount);
 
+  // Reserve stock and gift-card balance atomically (findOneAndUpdate with a
+  // quantity/balance guard) so two concurrent checkouts can't both succeed
+  // against the same last unit or the same last rupee of a gift card. If
+  // anything fails before the order is durably created, roll back whatever
+  // was already reserved.
+  const reservedStock: { productId: string; quantity: number; variantSku?: string }[] = [];
+  const reservedGiftCards: { code: string; amount: number }[] = [];
   const giftCardsApplied: { code: string; amountApplied: number }[] = [];
-  let remaining = Math.max(0, subtotal - discount + shippingFee + tax);
-  for (const gc of cart.giftCards) {
-    if (remaining <= 0) break;
-    const card = await GiftCard.findOne({ code: gc.code, status: "active" });
-    if (!card || card.balance <= 0) continue;
-    const amountApplied = Math.min(card.balance, remaining);
-    giftCardsApplied.push({ code: card.code, amountApplied });
-    remaining -= amountApplied;
+  let totalAmount = 0;
+  let online = false;
+  let order: IOrder | undefined;
+
+  async function rollbackReservations() {
+    await Promise.all([
+      ...reservedStock.map(async (r) => {
+        if (r.variantSku) {
+          await Product.findOneAndUpdate(
+            { _id: r.productId, "variants.sku": r.variantSku },
+            { $inc: { "variants.$.stock": r.quantity, stock: r.quantity } }
+          );
+        } else {
+          await Product.findByIdAndUpdate(r.productId, { $inc: { stock: r.quantity } });
+        }
+      }),
+      ...reservedGiftCards.map((g) => GiftCard.findOneAndUpdate({ code: g.code }, { $inc: { balance: g.amount } })),
+    ]);
   }
 
-  const totalAmount = Math.max(0, remaining);
-  const online = isOnlinePaymentMethod(paymentMethod);
+  try {
+    for (const item of cart.items) {
+      const product = item.product as unknown as IProduct;
+      const sku = item.variantSku ? String(item.variantSku).toUpperCase() : undefined;
+      let updated;
+      if (sku && product.variants?.length) {
+        updated = await Product.findOneAndUpdate(
+          { _id: product._id, variants: { $elemMatch: { sku, stock: { $gte: item.quantity } } } },
+          { $inc: { "variants.$[v].stock": -item.quantity, stock: -item.quantity } },
+          { arrayFilters: [{ "v.sku": sku }], new: true }
+        );
+      } else {
+        updated = await Product.findOneAndUpdate(
+          { _id: product._id, stock: { $gte: item.quantity } },
+          { $inc: { stock: -item.quantity } }
+        );
+      }
+      if (!updated) {
+        throw new ApiError(400, `Insufficient stock for ${product.name}`);
+      }
+      reservedStock.push({ productId: product._id.toString(), quantity: item.quantity, variantSku: sku });
+    }
 
-  const order = await Order.create({
-    user: userId,
-    items: orderItems,
-    subtotal,
-    discount,
-    tax,
-    shippingFee,
-    totalAmount,
-    couponCode: appliedCoupon,
-    giftCardsApplied,
-    shippingAddress,
-    deliverySlot,
-    paymentMethod: online ? String(paymentMethod || "razorpay") : String(paymentMethod || "COD"),
-    paymentStatus: "pending",
-    status: "pending",
-    statusHistory: [{ status: "pending", at: new Date() }],
-  });
+    let remaining = Math.max(0, subtotal - discount + shippingFee + tax);
+    for (const gc of cart.giftCards) {
+      if (remaining <= 0) break;
+      const card = await GiftCard.findOne({ code: gc.code, status: "active" });
+      if (!card || card.balance <= 0) continue;
+      const amountApplied = Math.min(card.balance, remaining);
+      const updated = await GiftCard.findOneAndUpdate(
+        { code: card.code, status: "active", balance: { $gte: amountApplied } },
+        { $inc: { balance: -amountApplied } }
+      );
+      if (!updated) continue; // lost the race to another checkout — skip this card
+      reservedGiftCards.push({ code: card.code, amount: amountApplied });
+      giftCardsApplied.push({ code: card.code, amountApplied });
+      remaining -= amountApplied;
+    }
 
-  await Promise.all([
-    ...cart.items.map((item) =>
-      Product.findByIdAndUpdate(item.product, { $inc: { stock: -item.quantity } })
-    ),
-    appliedCoupon
-      ? Coupon.findOneAndUpdate(
-          { code: appliedCoupon },
-          { $push: { redemptions: { user: userId, order: order._id, redeemedAt: new Date() } } }
-        )
-      : Promise.resolve(),
-    ...giftCardsApplied.map((gc) =>
-      GiftCard.findOneAndUpdate({ code: gc.code }, { $inc: { balance: -gc.amountApplied } })
-    ),
-  ]);
+    totalAmount = Math.max(0, remaining);
+    online = isOnlinePaymentMethod(methodId);
+
+    order = await Order.create({
+      user: userId,
+      items: orderItems,
+      subtotal,
+      discount,
+      tax,
+      shippingFee,
+      totalAmount,
+      couponCode: appliedCoupon,
+      giftCardsApplied,
+      shippingAddress,
+      deliverySlot,
+      paymentMethod: online ? String(methodId || "razorpay") : String(methodId || "COD"),
+      paymentStatus: "pending",
+      status: "pending",
+      statusHistory: [{ status: "pending", at: new Date() }],
+    });
+  } catch (err) {
+    await rollbackReservations();
+    throw err;
+  }
+
+  // Order is durably created past this point — no more rollback of stock/gift-card reservations.
+  if (appliedCoupon) {
+    await Coupon.findOneAndUpdate(
+      { code: appliedCoupon },
+      { $push: { redemptions: { user: userId, order: order._id, redeemedAt: new Date() } } }
+    );
+  }
 
   cart.items = [];
   cart.couponCode = undefined;
@@ -147,6 +211,15 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   await cart.save();
 
   await notifyUser(userId, "order_update", "Order placed", `Your order #${order._id.toString().slice(-6)} has been placed.`, order._id.toString());
+
+  // COD can ship immediately; prepaid waits until markOrderPaid.
+  if (!online && String(order.paymentMethod || "").toUpperCase() === "COD") {
+    try {
+      await pushOrderToShiprocket(order);
+    } catch (err) {
+      console.error("Shiprocket push (COD) failed:", err);
+    }
+  }
 
   let razorpay: Record<string, unknown> | null = null;
   if (online) {
@@ -207,12 +280,14 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const listMyOrders = asyncHandler(async (req: Request, res: Response) => {
-  const orders = await Order.find({ user: req.user!._id }).sort({ createdAt: -1 });
+  const orders = await Order.find({ user: req.user!._id })
+    .populate("items.product", "name images slug")
+    .sort({ createdAt: -1 });
   res.json({ success: true, data: orders });
 });
 
 export const getOrder = asyncHandler(async (req: Request, res: Response) => {
-  const order = await Order.findById(req.params.id).populate("items.product", "name images slug");
+  const order = await Order.findById(req.params.id).populate("items.product", "name images slug returnWindowDays");
   if (!order) throw new ApiError(404, "Order not found");
 
   const isOwner = order.user.toString() === req.user!._id.toString();
@@ -232,9 +307,18 @@ export const getOrderTracking = asyncHandler(async (req: Request, res: Response)
     throw new ApiError(403, "Not authorized to view this order");
   }
 
+  const t = order.tracking || {};
   res.json({
     success: true,
-    data: { status: order.status, statusHistory: order.statusHistory, tracking: order.tracking },
+    data: {
+      status: order.status,
+      statusHistory: order.statusHistory,
+      tracking: t,
+      carrier: t.courier,
+      trackingNumber: t.trackingId,
+      url: t.url,
+      shiprocket: order.shiprocket,
+    },
   });
 });
 
@@ -262,6 +346,11 @@ export const getOrderInvoice = asyncHandler(async (req: Request, res: Response) 
       totalAmount: order.totalAmount,
       paymentMethod: order.paymentMethod,
       paymentStatus: order.paymentStatus,
+      // Flipkart-style GST helpers for invoice PDF
+      gstRate: Number(process.env.SHIPROCKET_GST_RATE) || 18,
+      sellerGstin: process.env.SHIPROCKET_GSTIN || "",
+      pickupState: process.env.SHIPROCKET_PICKUP_STATE || "",
+      hsn: process.env.SHIPROCKET_DEFAULT_HSN || "84713000",
     },
   });
 });
@@ -283,7 +372,15 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
   await order.save();
 
   await Promise.all(
-    order.items.map((item) => Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity } }))
+    order.items.map((item) => {
+      if (item.variantSku) {
+        return Product.findOneAndUpdate(
+          { _id: item.product, "variants.sku": item.variantSku },
+          { $inc: { "variants.$.stock": item.quantity, stock: item.quantity } }
+        );
+      }
+      return Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity } });
+    })
   );
 
   res.json({ success: true, data: order });
@@ -325,6 +422,77 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   );
 
   res.json({ success: true, data: order });
+});
+
+/** Admin: create / re-push Shiprocket shipment for an order. */
+export const shipWithShiprocket = asyncHandler(async (req: Request, res: Response) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw new ApiError(404, "Order not found");
+  if (order.status === "cancelled") throw new ApiError(400, "Cannot ship a cancelled order");
+
+  const { force, ewaybillNo, customerGstin } = req.body || {};
+  if (ewaybillNo != null || customerGstin != null) {
+    order.shiprocket = {
+      ...(order.shiprocket || {}),
+      ...(ewaybillNo != null ? { ewaybillNo: String(ewaybillNo).trim() } : {}),
+      ...(customerGstin != null ? { customerGstin: String(customerGstin).trim() } : {}),
+    };
+  }
+
+  try {
+    await pushOrderToShiprocket(order, { force: Boolean(force) });
+  } catch (err) {
+    throw new ApiError(502, err instanceof Error ? err.message : "Shiprocket request failed");
+  }
+
+  await logAudit(req, "orders", "shiprocket:push", order._id.toString());
+  res.json({ success: true, data: order });
+});
+
+function assertOrderAccess(req: Request, order: IOrder) {
+  const isOwner = order.user.toString() === req.user!._id.toString();
+  if (!isOwner && req.user!.role === "customer") {
+    throw new ApiError(403, "Not authorized to view this order");
+  }
+}
+
+/** Sync AWB after Ship Now in Shiprocket dashboard. */
+export const syncShiprocket = asyncHandler(async (req: Request, res: Response) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw new ApiError(404, "Order not found");
+  assertOrderAccess(req, order);
+  try {
+    await syncShiprocketOrder(order);
+  } catch (err) {
+    throw new ApiError(502, err instanceof Error ? err.message : "Shiprocket sync failed");
+  }
+  res.json({ success: true, data: order });
+});
+
+/** Download shipping label (PDF URL from Shiprocket). */
+export const downloadShiprocketLabel = asyncHandler(async (req: Request, res: Response) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw new ApiError(404, "Order not found");
+  assertOrderAccess(req, order);
+  try {
+    const url = await getShiprocketLabelUrl(order);
+    res.json({ success: true, data: { url, type: "label" } });
+  } catch (err) {
+    throw new ApiError(502, err instanceof Error ? err.message : "Could not get shipping label");
+  }
+});
+
+/** Download Shiprocket invoice (PDF URL). */
+export const downloadShiprocketInvoice = asyncHandler(async (req: Request, res: Response) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw new ApiError(404, "Order not found");
+  assertOrderAccess(req, order);
+  try {
+    const url = await getShiprocketInvoiceUrl(order);
+    res.json({ success: true, data: { url, type: "invoice" } });
+  } catch (err) {
+    throw new ApiError(502, err instanceof Error ? err.message : "Could not get Shiprocket invoice");
+  }
 });
 
 // --- Admin ---

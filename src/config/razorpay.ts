@@ -54,5 +54,27 @@ export function verifyPaymentSignature(params: {
 
 export function isOnlinePaymentMethod(method?: string) {
   const value = String(method || "").trim().toLowerCase();
-  return ["razorpay", "upi", "card", "online", "netbanking", "wallet"].includes(value);
+  return ["razorpay", "upi", "card", "online", "netbanking", "wallet", "emi"].includes(value);
+}
+
+export function isWebhookConfigured() {
+  return Boolean(process.env.RAZORPAY_WEBHOOK_SECRET);
+}
+
+/**
+ * Verifies the `X-Razorpay-Signature` header against the raw webhook body.
+ * Must be called with the exact bytes Razorpay sent (before any JSON parsing/re-serialization),
+ * since the signature is an HMAC over the raw request body.
+ */
+export function verifyWebhookSignature(rawBody: Buffer, signature: string | undefined) {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret) throw new ApiError(500, "Razorpay webhook secret is not configured");
+  if (!signature) throw new ApiError(400, "Missing X-Razorpay-Signature header");
+
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    throw new ApiError(400, "Invalid Razorpay webhook signature");
+  }
 }

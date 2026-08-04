@@ -5,6 +5,7 @@ import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { slugify } from "../utils/slugify";
 import { logAudit } from "../utils/auditLog";
+import { buildVariantPayload, syncProductAggregates } from "../utils/variants";
 
 const SORTS: Record<string, Record<string, 1 | -1>> = {
   price_asc: { price: 1 },
@@ -66,6 +67,60 @@ function normalizeSpecs(specs: unknown): { key: string; value: string }[] {
   return [];
 }
 
+function normalizeVariants(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((v) => {
+      if (!v || typeof v !== "object") return null;
+      const row = v as Record<string, unknown>;
+      const sku = String(row.sku || "")
+        .trim()
+        .toUpperCase();
+      if (!sku) return null;
+      const sellingPrice = Number(row.sellingPrice ?? row.price ?? 0) || 0;
+      const mrp = Number(row.mrp ?? row.originalPrice ?? sellingPrice) || sellingPrice;
+      let attributes: Record<string, string> = {};
+      if (row.attributes && typeof row.attributes === "object") {
+        attributes = Object.fromEntries(
+          Object.entries(row.attributes as Record<string, string>)
+            .map(([k, val]) => [String(k).trim(), String(val).trim()])
+            .filter(([k, val]) => k && val)
+        );
+      }
+      if (row.color && !attributes.Color) attributes.Color = String(row.color);
+      if (row.storage && !attributes.Storage) attributes.Storage = String(row.storage);
+
+      return {
+        sku,
+        barcode: row.barcode ? String(row.barcode) : undefined,
+        attributes,
+        mrp,
+        sellingPrice,
+        offerPrice: row.offerPrice != null ? Number(row.offerPrice) : undefined,
+        stock: Math.max(0, Number(row.stock) || 0),
+        reservedStock: Math.max(0, Number(row.reservedStock) || 0),
+        minStock: Math.max(0, Number(row.minStock) || 0),
+        maxOrderQty: row.maxOrderQty != null ? Number(row.maxOrderQty) : undefined,
+        weight: row.weight != null ? Number(row.weight) : undefined,
+        dimensions: row.dimensions,
+        status: row.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+        isDefault: !!row.isDefault,
+        isFeatured: !!row.isFeatured,
+        isBestSeller: !!row.isBestSeller,
+        images: normalizeImages(row.images),
+        specifications: normalizeSpecs(row.specifications),
+        tax: row.tax != null ? Number(row.tax) : undefined,
+        codAvailable: row.codAvailable !== false,
+        emiAvailable: row.emiAvailable !== false,
+        exchangeAvailable: !!row.exchangeAvailable,
+        color: attributes.Color || row.color,
+        storage: attributes.Storage || row.storage,
+        price: sellingPrice,
+      };
+    })
+    .filter(Boolean);
+}
+
 function buildProductPayload(body: Record<string, unknown>, { requireCore = false } = {}) {
   const category = (body.categoryId || body.category) as string | undefined;
   const brand = (body.brandId || body.brand) as string | undefined;
@@ -96,11 +151,15 @@ function buildProductPayload(body: Record<string, unknown>, { requireCore = fals
     "featured",
     "bestSeller",
     "newArrival",
+    "condition",
     "warranty",
+    "returnWindowDays",
+    "deliveryPromise",
+    "emiMonths",
     "video",
-    "variants",
     "boxContents",
     "seo",
+    "defaultVariantSku",
   ] as const;
 
   for (const key of copyKeys) {
@@ -112,6 +171,15 @@ function buildProductPayload(body: Record<string, unknown>, { requireCore = fals
 
   if (body.images !== undefined) payload.images = normalizeImages(body.images);
   if (body.specifications !== undefined) payload.specifications = normalizeSpecs(body.specifications);
+  if (body.variants !== undefined) payload.variants = normalizeVariants(body.variants);
+  if (body.optionTypes !== undefined && Array.isArray(body.optionTypes)) {
+    payload.optionTypes = (body.optionTypes as { name?: string; values?: string[] }[])
+      .map((o) => ({
+        name: String(o.name || "").trim(),
+        values: Array.isArray(o.values) ? o.values.map(String).filter(Boolean) : [],
+      }))
+      .filter((o) => o.name);
+  }
 
   if (body.status !== undefined) {
     const status = normalizeStatus(String(body.status));
@@ -122,7 +190,6 @@ function buildProductPayload(body: Record<string, unknown>, { requireCore = fals
   if (body.slug) payload.slug = slugify(String(body.slug));
   else if (name) payload.slug = slugify(String(name));
 
-  // Auto-calc discount from originalPrice when not provided
   if (
     payload.originalPrice !== undefined &&
     payload.price !== undefined &&
@@ -135,14 +202,21 @@ function buildProductPayload(body: Record<string, unknown>, { requireCore = fals
     }
   }
 
-  // Alias legacy field
   if (body.lowStockThreshold !== undefined && body.minStock === undefined) {
     payload.minStock = body.lowStockThreshold;
   }
 
   if (payload.sku) payload.sku = String(payload.sku).trim().toUpperCase();
+  if (payload.defaultVariantSku) {
+    payload.defaultVariantSku = String(payload.defaultVariantSku).trim().toUpperCase();
+  }
 
   return payload;
+}
+
+function productResponse(product: InstanceType<typeof Product>) {
+  const base = product.toObject({ virtuals: true });
+  return { ...base, ...buildVariantPayload(product) };
 }
 
 export const listProducts = asyncHandler(async (req: Request, res: Response) => {
@@ -215,7 +289,7 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
 
   res.json({
     success: true,
-    data: products,
+    data: products.map((p) => productResponse(p)),
     pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) },
   });
 });
@@ -225,7 +299,7 @@ export const getProduct = asyncHandler(async (req: Request, res: Response) => {
     .populate("category", "name slug")
     .populate("brand", "name slug logo");
   if (!product) throw new ApiError(404, "Product not found");
-  res.json({ success: true, data: product });
+  res.json({ success: true, data: productResponse(product) });
 });
 
 export const getProductBySlug = asyncHandler(async (req: Request, res: Response) => {
@@ -233,7 +307,7 @@ export const getProductBySlug = asyncHandler(async (req: Request, res: Response)
     .populate("category", "name slug")
     .populate("brand", "name slug logo");
   if (!product) throw new ApiError(404, "Product not found");
-  res.json({ success: true, data: product });
+  res.json({ success: true, data: productResponse(product) });
 });
 
 export const getRelatedProducts = asyncHandler(async (req: Request, res: Response) => {
@@ -266,24 +340,26 @@ export const compareProducts = asyncHandler(async (req: Request, res: Response) 
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   const payload = buildProductPayload(req.body, { requireCore: true });
   const product = await Product.create(payload);
+  syncProductAggregates(product);
+  await product.save();
   await logAudit(req, "products", "create", product._id.toString());
   const populated = await Product.findById(product._id)
     .populate("category", "name slug")
     .populate("brand", "name slug logo");
-  res.status(201).json({ success: true, data: populated });
+  res.status(201).json({ success: true, data: populated ? productResponse(populated) : product });
 });
 
 export const updateProduct = asyncHandler(async (req: Request, res: Response) => {
   const payload = buildProductPayload(req.body);
-  const product = await Product.findByIdAndUpdate(req.params.id, payload, {
-    new: true,
-    runValidators: true,
-  })
-    .populate("category", "name slug")
-    .populate("brand", "name slug logo");
+  const product = await Product.findById(req.params.id);
   if (!product) throw new ApiError(404, "Product not found");
+  Object.assign(product, payload);
+  if (payload.variants !== undefined) syncProductAggregates(product);
+  await product.save();
+  await product.populate("category", "name slug");
+  await product.populate("brand", "name slug logo");
   await logAudit(req, "products", "update", product._id.toString());
-  res.json({ success: true, data: product });
+  res.json({ success: true, data: productResponse(product) });
 });
 
 export const deleteProduct = asyncHandler(async (req: Request, res: Response) => {

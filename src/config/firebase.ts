@@ -17,9 +17,8 @@ function loadServiceAccountFromFile(): ServiceAccountJson | null {
     ? configured
     : path.join(process.cwd(), configured);
 
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Firebase service account file not found: ${filePath}`);
-  }
+  // Fall through to FIREBASE_* env vars when the JSON file isn't present.
+  if (!fs.existsSync(filePath)) return null;
 
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as ServiceAccountJson;
 }

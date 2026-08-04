@@ -68,3 +68,36 @@ export const validateCoupon = asyncHandler(async (req: Request, res: Response) =
 
   res.json({ success: true, data: { code: coupon.code, discount, cartTotal } });
 });
+
+/** Active coupons the signed-in customer can still use (My Account). */
+export const listAvailableCoupons = asyncHandler(async (req: Request, res: Response) => {
+  const now = new Date();
+  const userId = req.user!._id.toString();
+  const coupons = await Coupon.find({
+    active: true,
+    validFrom: { $lte: now },
+    validTo: { $gte: now },
+  }).sort({ validTo: 1 });
+
+  const available = coupons.filter((c) => {
+    if (c.usageLimit != null && c.redemptions.length >= c.usageLimit) return false;
+    const used = c.redemptions.filter((r) => r.user.toString() === userId).length;
+    return used < (c.perUserLimit || 1);
+  });
+
+  res.json({
+    success: true,
+    data: available.map((c) => ({
+      id: c._id,
+      code: c.code,
+      type: c.type,
+      value: c.value,
+      minOrderValue: c.minOrderValue,
+      validTo: c.validTo,
+      label:
+        c.type === "flat"
+          ? `₹${c.value} off`
+          : `${c.value}% off`,
+    })),
+  });
+});

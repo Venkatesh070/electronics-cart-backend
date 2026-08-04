@@ -24,6 +24,8 @@ export interface IUser extends Document {
     supportReplies: boolean;
   };
   adminNotes: { author: Types.ObjectId; text: string; at: Date }[];
+  createdAt: Date;
+  updatedAt: Date;
   comparePassword(candidate: string): Promise<boolean>;
 }
 

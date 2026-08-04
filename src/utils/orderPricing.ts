@@ -2,9 +2,18 @@ import { TaxRule } from "../models/TaxRule";
 import { ShippingZone } from "../models/ShippingZone";
 
 export async function computeShippingFee(state: string, subtotal: number): Promise<number> {
-  const zone = await ShippingZone.findOne({ regions: state, active: true });
-  if (!zone) return 0;
-  if (zone.freeShippingThreshold && subtotal >= zone.freeShippingThreshold) return 0;
+  const key = String(state || "").trim();
+  const zone =
+    (await ShippingZone.findOne({ regions: key, active: true })) ||
+    (await ShippingZone.findOne({
+      regions: { $in: [key, key.toLowerCase(), "ALL", "India", "PAN-INDIA"] },
+      active: true,
+    }));
+  if (!zone) {
+    // Pan-India default (matches /shipping/estimate)
+    return subtotal >= 499 ? 0 : 49;
+  }
+  if (zone.freeShippingThreshold != null && subtotal >= zone.freeShippingThreshold) return 0;
   return zone.baseRate;
 }
 
