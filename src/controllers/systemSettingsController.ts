@@ -29,13 +29,14 @@ export const getPublicSettings = asyncHandler(async (_req: Request, res: Respons
 
 export const updateSettings = asyncHandler(async (req: Request, res: Response) => {
   const settings = await getOrCreateSettings();
-  const { storeName, logo, currency, locale, timezone, maintenanceMode } = req.body;
+  const { storeName, logo, currency, locale, timezone, maintenanceMode, sellerGstin } = req.body;
   if (storeName !== undefined) settings.storeName = storeName;
   if (logo !== undefined) settings.logo = logo;
   if (currency !== undefined) settings.currency = currency;
   if (locale !== undefined) settings.locale = locale;
   if (timezone !== undefined) settings.timezone = timezone;
   if (maintenanceMode !== undefined) settings.maintenanceMode = maintenanceMode;
+  if (sellerGstin !== undefined) settings.sellerGstin = String(sellerGstin || "").trim().toUpperCase();
   await settings.save();
   res.json({ success: true, data: settings });
 });
