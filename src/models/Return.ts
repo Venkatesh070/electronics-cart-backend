@@ -9,6 +9,17 @@ export type ReturnStatus =
   | "inspected"
   | "refunded";
 
+export interface IReturnShiprocket {
+  orderId?: string;
+  shipmentId?: string;
+  awb?: string;
+  courier?: string;
+  status?: string;
+  trackingUrl?: string;
+  pushedAt?: Date;
+  receivedAt?: Date;
+}
+
 export interface IReturn extends Document {
   _id: Types.ObjectId;
   order: Types.ObjectId;
@@ -22,7 +33,26 @@ export interface IReturn extends Document {
   refundMethod?: string;
   pickupDate?: Date;
   inspectionNotes?: string;
+  shiprocket?: IReturnShiprocket;
+  razorpayRefundId?: string;
+  refundedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }
+
+const shiprocketSchema = new Schema<IReturnShiprocket>(
+  {
+    orderId: { type: String },
+    shipmentId: { type: String },
+    awb: { type: String },
+    courier: { type: String },
+    status: { type: String },
+    trackingUrl: { type: String },
+    pushedAt: { type: Date },
+    receivedAt: { type: Date },
+  },
+  { _id: false }
+);
 
 const returnSchema = new Schema<IReturn>(
   {
@@ -41,8 +71,14 @@ const returnSchema = new Schema<IReturn>(
     refundMethod: { type: String },
     pickupDate: { type: Date },
     inspectionNotes: { type: String },
+    shiprocket: { type: shiprocketSchema },
+    razorpayRefundId: { type: String },
+    refundedAt: { type: Date },
   },
   { timestamps: true }
 );
+
+returnSchema.index({ "shiprocket.orderId": 1 });
+returnSchema.index({ "shiprocket.awb": 1 });
 
 export const Return = model<IReturn>("Return", returnSchema);

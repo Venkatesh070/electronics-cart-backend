@@ -19,10 +19,72 @@ import {
   isRazorpayConfigured,
   toPaise,
 } from "../config/razorpay";
-import { pushOrderToShiprocket, syncShiprocketOrder, getShiprocketLabelUrl, getShiprocketInvoiceUrl } from "../services/shiprocket";
+import { pushOrderToShiprocket, syncShiprocketOrder, getShiprocketLabelUrl, getShiprocketInvoiceUrl, cancelShiprocketOrder } from "../services/shiprocket";
+import { refundRazorpayPayment } from "../services/payments";
 import { resolveUnitPrice } from "../utils/variants";
 import { IProduct } from "../models/Product";
 import { getEnabledPaymentMethods } from "./paymentSettingsController";
+
+async function restockOrderItems(order: IOrder) {
+  await Promise.all(
+    order.items.map((item) => {
+      if (item.variantSku) {
+        return Product.findOneAndUpdate(
+          { _id: item.product, "variants.sku": item.variantSku },
+          { $inc: { "variants.$.stock": item.quantity, stock: item.quantity } }
+        );
+      }
+      return Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity } });
+    })
+  );
+}
+
+/**
+ * Cancel Shiprocket + initiate gateway refund, then mark order cancelled and restock.
+ * Used by customer cancel and admin status → cancelled.
+ */
+async function processOrderCancellation(order: IOrder, reason?: string) {
+  if (order.status === "cancelled") {
+    throw new ApiError(400, "Order is already cancelled");
+  }
+
+  const shiprocket = await cancelShiprocketOrder(order).catch(
+    (err: Error): import("../services/shiprocket").ShiprocketCancelResult => ({
+      cancelled: false,
+      error: err.message || "Shiprocket cancel failed",
+    })
+  );
+
+  const refund = await refundRazorpayPayment(order, reason);
+
+  const notes = [
+    reason || "Order cancelled",
+    shiprocket.cancelled
+      ? "Shiprocket order cancelled"
+      : shiprocket.error
+        ? `Shiprocket: ${shiprocket.error}`
+        : shiprocket.skipped
+          ? `Shiprocket: ${shiprocket.skipped}`
+          : null,
+    refund.refunded
+      ? `Refund initiated${refund.refundId ? ` (${refund.refundId})` : ""}`
+      : refund.error
+        ? `Refund failed: ${refund.error}`
+        : refund.skipped
+          ? `Refund: ${refund.skipped}`
+          : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  order.status = "cancelled";
+  if (reason) order.cancelReason = reason;
+  order.statusHistory.push({ status: "cancelled", note: notes, at: new Date() });
+  await order.save();
+  await restockOrderItems(order);
+
+  return { shiprocket, refund };
+}
 
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const { addressId, shippingAddress: shippingAddressBody, deliverySlot, paymentMethod } = req.body;
@@ -346,13 +408,24 @@ export const getOrderInvoice = asyncHandler(async (req: Request, res: Response) 
     throw new ApiError(403, "Not authorized to view this order");
   }
 
+  const settings = await SystemSettings.findOne()
+    .select("storeName logo location supportPhone sellerGstin")
+    .lean();
+  const sellerGstin =
+    String(process.env.SHIPROCKET_GSTIN || settings?.sellerGstin || "")
+      .trim()
+      .toUpperCase() || "";
+
   res.json({
     success: true,
     data: {
       invoiceNumber: `INV-${order._id.toString().slice(-8).toUpperCase()}`,
+      orderId: order._id.toString(),
+      orderDate: order.createdAt,
       issuedAt: order.createdAt,
       customer: order.user,
       billingAddress: order.shippingAddress,
+      shippingAddress: order.shippingAddress,
       items: order.items,
       subtotal: order.subtotal,
       discount: order.discount,
@@ -361,13 +434,13 @@ export const getOrderInvoice = asyncHandler(async (req: Request, res: Response) 
       totalAmount: order.totalAmount,
       paymentMethod: order.paymentMethod,
       paymentStatus: order.paymentStatus,
-      // Flipkart-style GST helpers for invoice PDF
-      gstRate: Number(process.env.SHIPROCKET_GST_RATE) || 18,
-      sellerGstin:
-        process.env.SHIPROCKET_GSTIN ||
-        (await SystemSettings.findOne().select("sellerGstin").lean())?.sellerGstin ||
-        "",
-      pickupState: process.env.SHIPROCKET_PICKUP_STATE || "",
+      storeName: process.env.SHIPROCKET_COMPANY_NAME || settings?.storeName || "Electronics Cart",
+      logo: settings?.logo || "",
+      sellerAddress: settings?.location || process.env.SHIPROCKET_SELLER_ADDRESS || "",
+      sellerPhone: settings?.supportPhone || "",
+      sellerGstin,
+      pickupState: process.env.SHIPROCKET_PICKUP_STATE || "Telangana",
+      sellerState: process.env.SHIPROCKET_PICKUP_STATE || "Telangana",
       hsn: process.env.SHIPROCKET_DEFAULT_HSN || "84713000",
     },
   });
@@ -379,29 +452,30 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
   if (!order) throw new ApiError(404, "Order not found");
 
   const isOwner = order.user.toString() === req.user!._id.toString();
-  if (!isOwner) throw new ApiError(403, "Not authorized to cancel this order");
+  const isStaff = req.user!.role !== "customer";
+  if (!isOwner && !isStaff) throw new ApiError(403, "Not authorized to cancel this order");
   if (!["pending", "confirmed", "paid"].includes(order.status)) {
     throw new ApiError(400, `Order cannot be cancelled once it is ${order.status}`);
   }
 
-  order.status = "cancelled";
-  order.cancelReason = reason;
-  order.statusHistory.push({ status: "cancelled", note: reason, at: new Date() });
-  await order.save();
+  const result = await processOrderCancellation(order, reason || "Customer cancelled");
 
-  await Promise.all(
-    order.items.map((item) => {
-      if (item.variantSku) {
-        return Product.findOneAndUpdate(
-          { _id: item.product, "variants.sku": item.variantSku },
-          { $inc: { "variants.$.stock": item.quantity, stock: item.quantity } }
-        );
-      }
-      return Product.findByIdAndUpdate(item.product, { $inc: { stock: item.quantity } });
-    })
+  await notifyUser(
+    order.user.toString(),
+    "order_update",
+    "Order cancelled",
+    result.refund.refunded
+      ? `Your order #${order._id.toString().slice(-6)} was cancelled. Refund has been initiated to your original payment method.`
+      : `Your order #${order._id.toString().slice(-6)} was cancelled.`,
+    order._id.toString()
   );
 
-  res.json({ success: true, data: order });
+  res.json({
+    success: true,
+    data: order,
+    shiprocket: result.shiprocket,
+    refund: result.refund,
+  });
 });
 
 export const updateOrderStatus = asyncHandler(async (req: Request, res: Response) => {
@@ -422,6 +496,34 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   const order = await Order.findById(req.params.id);
   if (!order) throw new ApiError(404, "Order not found");
+
+  if (status === "cancelled") {
+    if (order.status === "cancelled") {
+      return res.json({ success: true, data: order });
+    }
+    if (["shipped", "out_for_delivery", "delivered"].includes(order.status)) {
+      throw new ApiError(400, `Order cannot be cancelled once it is ${order.status}`);
+    }
+
+    const result = await processOrderCancellation(order, note || "Cancelled by admin");
+    await logAudit(req, "orders", "status:cancelled", order._id.toString());
+    await notifyUser(
+      order.user.toString(),
+      "order_update",
+      "Order cancelled",
+      result.refund.refunded
+        ? `Your order #${order._id.toString().slice(-6)} was cancelled. Refund has been initiated.`
+        : `Your order #${order._id.toString().slice(-6)} was cancelled.`,
+      order._id.toString()
+    );
+
+    return res.json({
+      success: true,
+      data: order,
+      shiprocket: result.shiprocket,
+      refund: result.refund,
+    });
+  }
 
   order.status = status;
   order.statusHistory.push({ status, note, at: new Date() });

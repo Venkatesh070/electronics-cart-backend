@@ -330,18 +330,6 @@ export const getRelatedProducts = asyncHandler(async (req: Request, res: Respons
   res.json({ success: true, data: related });
 });
 
-export const compareProducts = asyncHandler(async (req: Request, res: Response) => {
-  const ids = ((req.query.ids as string) || "").split(",").filter(Boolean);
-  if (ids.length === 0) throw new ApiError(400, "ids query param is required");
-  if (ids.length > 4) throw new ApiError(400, "You can compare at most 4 products");
-
-  const products = await Product.find({ _id: { $in: ids } })
-    .populate("category", "name slug")
-    .populate("brand", "name slug logo");
-
-  res.json({ success: true, data: products });
-});
-
 export const createProduct = asyncHandler(async (req: Request, res: Response) => {
   const payload = buildProductPayload(req.body, { requireCore: true });
   const product = await Product.create(payload);

@@ -2,7 +2,6 @@ import { Router } from "express";
 import {
   bulkDelete,
   bulkUpdateStatus,
-  compareProducts,
   createProduct,
   deleteProduct,
   getProduct,
@@ -17,7 +16,6 @@ import { protect, requirePermission } from "../middleware/auth";
 const router = Router();
 
 router.get("/", listProducts);
-router.get("/compare", compareProducts);
 router.get("/low-stock", protect, requirePermission("inventory", "view"), listLowStock);
 router.get("/slug/:slug", getProductBySlug);
 router.get("/:id/related", getRelatedProducts);

@@ -71,7 +71,6 @@ Use **Authorize** in Swagger and paste a JWT from `/api/auth/login` to try prote
 | GET | `/api/products/:id` | Public | PDP by id |
 | GET | `/api/products/slug/:slug` | Public | PDP by slug |
 | GET | `/api/products/:id/related` | Public | Related / FBT products |
-| GET | `/api/products/compare?ids=a,b,c` | Public | Side-by-side compare (max 4) |
 | GET | `/api/shipping/estimate?state=&pincode=&subtotal=` | Public | Delivery ETA + fee by location |
 | GET | `/api/shipping/zones` | Public | Active shipping zones |
 

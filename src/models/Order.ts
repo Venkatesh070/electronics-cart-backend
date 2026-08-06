@@ -51,6 +51,8 @@ export interface IOrder extends Document {
   paymentStatus: PaymentStatus;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
+  razorpayRefundId?: string;
+  refundedAt?: Date;
   status: OrderStatus;
   statusHistory: IStatusHistoryEntry[];
   tracking: {
@@ -124,6 +126,8 @@ const orderSchema = new Schema<IOrder>(
     paymentStatus: { type: String, enum: ["pending", "paid", "failed", "refunded"], default: "pending" },
     razorpayOrderId: { type: String, index: true },
     razorpayPaymentId: { type: String },
+    razorpayRefundId: { type: String },
+    refundedAt: { type: Date },
     status: {
       type: String,
       enum: ["pending", "confirmed", "paid", "shipped", "out_for_delivery", "delivered", "cancelled"],
