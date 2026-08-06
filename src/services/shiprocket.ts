@@ -14,6 +14,14 @@ export function isShiprocketConfigured(): boolean {
   return Boolean(process.env.SHIPROCKET_EMAIL && process.env.SHIPROCKET_PASSWORD);
 }
 
+const MIN_PACKAGE_WEIGHT_KG = 2.5;
+const AVG_ITEM_WEIGHT_KG = 2.5;
+
+/** Laptop-ish per-item weight estimate — shared by order creation and rate quotes so both agree. */
+export function estimateOrderWeight(qty: number): number {
+  return Math.max(MIN_PACKAGE_WEIGHT_KG, qty * AVG_ITEM_WEIGHT_KG);
+}
+
 async function getToken(): Promise<string> {
   if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache.token;
 
@@ -125,7 +133,7 @@ export async function createShiprocketOrder(
   const isCod = String(order.paymentMethod || "").toUpperCase() === "COD";
   const qty = order.items.reduce((n, i) => n + i.quantity, 0);
   // Laptop-ish defaults (was 0.5kg / 10cm — triggers bad rates & e-way issues)
-  const weight = Math.max(2.5, qty * 2.5);
+  const weight = estimateOrderWeight(qty);
   const length = Number(process.env.SHIPROCKET_BOX_LENGTH) || 45;
   const breadth = Number(process.env.SHIPROCKET_BOX_BREADTH) || 35;
   const height = Number(process.env.SHIPROCKET_BOX_HEIGHT) || 12;
@@ -369,6 +377,131 @@ export async function getShiprocketLabelUrl(order: IOrder): Promise<string> {
   applyShiprocketFields(order, { labelUrl });
   await order.save();
   return labelUrl;
+}
+
+type PickupCache = { pincode: string; expiresAt: number };
+let pickupCache: PickupCache | null = null;
+
+/** Resolve the pickup location's pincode (env override, else looked up from Shiprocket & cached). */
+async function getPickupPincode(): Promise<string> {
+  const override = process.env.SHIPROCKET_PICKUP_PINCODE;
+  if (override) return override.trim();
+  if (pickupCache && pickupCache.expiresAt > Date.now()) return pickupCache.pincode;
+
+  const body = await srFetch("/settings/company/pickup");
+  const addresses =
+    ((body.data as { shipping_address?: { pickup_location?: string; pin_code?: string }[] } | undefined)
+      ?.shipping_address) || [];
+  const wanted = (process.env.SHIPROCKET_PICKUP_LOCATION || "Primary").toLowerCase();
+  const match =
+    addresses.find((a) => String(a.pickup_location || "").toLowerCase() === wanted) || addresses[0];
+  if (!match?.pin_code) throw new Error("Could not resolve Shiprocket pickup pincode");
+
+  pickupCache = { pincode: String(match.pin_code), expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
+  return pickupCache.pincode;
+}
+
+export type ShiprocketCourierOption = {
+  courierId: number;
+  courierName: string;
+  rate: number;
+  codAvailable: boolean;
+  estimatedDays?: number;
+  etd?: string;
+};
+
+/** Live courier serviceability + rates for a delivery pincode (Shiprocket's rate-check API). */
+export async function getServiceableCouriers(
+  deliveryPincode: string,
+  weight: number,
+  cod: boolean
+): Promise<ShiprocketCourierOption[]> {
+  if (!isShiprocketConfigured()) throw new Error("Shiprocket is not configured");
+  if (process.env.SHIPPING_MOCK === "true") {
+    return [
+      { courierId: -1, courierName: "Mock Standard Courier", rate: 99, codAvailable: true, estimatedDays: 5 },
+      { courierId: -2, courierName: "Mock Express Courier", rate: 149, codAvailable: true, estimatedDays: 2 },
+    ];
+  }
+
+  const pickupPincode = await getPickupPincode();
+  const params = new URLSearchParams({
+    pickup_postcode: pickupPincode,
+    delivery_postcode: String(deliveryPincode),
+    weight: String(weight),
+    cod: cod ? "1" : "0",
+  });
+  const body = await srFetch(`/courier/serviceability/?${params.toString()}`);
+  const list =
+    ((body.data as { available_courier_companies?: Array<Record<string, unknown>> } | undefined)
+      ?.available_courier_companies) || [];
+
+  return list
+    .map((c) => ({
+      courierId: Number(c.courier_company_id),
+      courierName: String(c.courier_name || "Courier"),
+      rate: Math.round(Number(c.rate ?? c.freight_charge ?? 0)),
+      codAvailable: Number(c.cod) === 1,
+      estimatedDays:
+        c.estimated_delivery_days != null && !Number.isNaN(Number(c.estimated_delivery_days))
+          ? Number(c.estimated_delivery_days)
+          : undefined,
+      etd: typeof c.etd === "string" ? c.etd : undefined,
+    }))
+    .filter((c) => c.rate > 0)
+    .sort((a, b) => a.rate - b.rate);
+}
+
+export type DeliverySlotQuote = {
+  slot: "standard" | "express";
+  label: string;
+  courierName: string;
+  rate: number;
+  estimatedDays?: number;
+  etd?: string;
+};
+
+/**
+ * Derives the two checkout-facing options from live courier rates: cheapest → Standard,
+ * fastest ETA → Express (deduped if the same courier wins both).
+ */
+export async function getCheckoutDeliveryOptions(
+  deliveryPincode: string,
+  qty: number,
+  cod: boolean
+): Promise<DeliverySlotQuote[]> {
+  const weight = estimateOrderWeight(qty);
+  const couriers = await getServiceableCouriers(deliveryPincode, weight, cod);
+  if (!couriers.length) throw new Error("No couriers currently serviceable for this pincode");
+
+  const cheapest = couriers[0];
+  const fastest = [...couriers].sort((a, b) => {
+    const ad = a.estimatedDays ?? 99;
+    const bd = b.estimatedDays ?? 99;
+    return ad !== bd ? ad - bd : a.rate - b.rate;
+  })[0];
+
+  const options: DeliverySlotQuote[] = [
+    {
+      slot: "standard",
+      label: "Standard delivery",
+      courierName: cheapest.courierName,
+      rate: cheapest.rate,
+      estimatedDays: cheapest.estimatedDays,
+      etd: cheapest.etd,
+    },
+  ];
+  if (fastest && fastest.courierId !== cheapest.courierId) {
+    options.push({
+      slot: "express",
+      label: "Express delivery",
+      courierName: fastest.courierName,
+      rate: fastest.rate,
+      estimatedDays: fastest.estimatedDays,
+      etd: fastest.etd,
+    });
+  }
+  return options;
 }
 
 /** Generate Shiprocket tax/shipping invoice PDF URL. */

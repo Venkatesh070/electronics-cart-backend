@@ -21,6 +21,12 @@ export const getPublicSettings = asyncHandler(async (_req: Request, res: Respons
     data: {
       storeName: settings.storeName,
       logo: settings.logo || "",
+      tagline: settings.tagline || "",
+      location: settings.location || "",
+      supportPhone: settings.supportPhone || "",
+      whatsapp: settings.whatsapp || "",
+      brandAccentColor: settings.brandAccentColor,
+      social: settings.social || {},
       currency: settings.currency,
       maintenanceMode: settings.maintenanceMode,
     },
@@ -29,9 +35,37 @@ export const getPublicSettings = asyncHandler(async (_req: Request, res: Respons
 
 export const updateSettings = asyncHandler(async (req: Request, res: Response) => {
   const settings = await getOrCreateSettings();
-  const { storeName, logo, currency, locale, timezone, maintenanceMode, sellerGstin } = req.body;
+  const {
+    storeName,
+    logo,
+    tagline,
+    location,
+    supportPhone,
+    whatsapp,
+    brandAccentColor,
+    social,
+    currency,
+    locale,
+    timezone,
+    maintenanceMode,
+    sellerGstin
+  } = req.body;
   if (storeName !== undefined) settings.storeName = storeName;
   if (logo !== undefined) settings.logo = logo;
+  if (tagline !== undefined) settings.tagline = tagline;
+  if (location !== undefined) settings.location = location;
+  if (supportPhone !== undefined) settings.supportPhone = supportPhone;
+  if (whatsapp !== undefined) settings.whatsapp = whatsapp;
+  if (brandAccentColor !== undefined) settings.brandAccentColor = brandAccentColor;
+  if (social !== undefined) {
+    settings.social = {
+      facebook: social.facebook || undefined,
+      instagram: social.instagram || undefined,
+      x: social.x || undefined,
+      youtube: social.youtube || undefined,
+      linkedin: social.linkedin || undefined,
+    };
+  }
   if (currency !== undefined) settings.currency = currency;
   if (locale !== undefined) settings.locale = locale;
   if (timezone !== undefined) settings.timezone = timezone;

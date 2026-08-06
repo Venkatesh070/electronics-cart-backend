@@ -12,6 +12,8 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -23,6 +25,7 @@
     "mongoose": "^8.5.1",
     "morgan": "^1.10.0",
     "multer": "^2.2.0",
+    "openai": "^7.4.0",
     "razorpay": "^2.9.8",
     "swagger-ui-express": "^5.0.1",
     "yamljs": "^0.3.0"

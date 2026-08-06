@@ -9,7 +9,7 @@ import { SystemSettings } from "../models/SystemSettings";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { computeCouponDiscount } from "../utils/couponPricing";
-import { computeShippingFee, computeTax } from "../utils/orderPricing";
+import { computeTax, resolveShippingFee } from "../utils/orderPricing";
 import { logAudit } from "../utils/auditLog";
 import { notifyUser } from "../utils/notify";
 import {
@@ -108,7 +108,16 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const shippingFee = await computeShippingFee(shippingAddress.state, subtotal - discount);
+  const qty = cart.items.reduce((n, item) => n + item.quantity, 0);
+  const shippingQuote = await resolveShippingFee({
+    state: shippingAddress.state,
+    postalCode: shippingAddress.postalCode,
+    subtotal: subtotal - discount,
+    qty,
+    deliverySlot,
+    cod: methodId === "COD",
+  });
+  const shippingFee = shippingQuote.fee;
   const tax = await computeTax(shippingAddress.state, undefined, subtotal - discount);
 
   // Reserve stock and gift-card balance atomically (findOneAndUpdate with a

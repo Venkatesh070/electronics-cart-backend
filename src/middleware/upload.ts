@@ -6,7 +6,7 @@ import { ApiError } from "../utils/ApiError";
 
 export const UPLOAD_ROOT = path.join(process.cwd(), "uploads");
 
-export const UPLOAD_FOLDERS = ["products", "brands", "categories", "misc"] as const;
+export const UPLOAD_FOLDERS = ["products", "brands", "categories", "avatars", "misc"] as const;
 export type UploadFolder = (typeof UPLOAD_FOLDERS)[number];
 
 export function ensureUploadDirs() {

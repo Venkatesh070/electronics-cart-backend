@@ -44,7 +44,8 @@ function attrsFromLegacy(v: IProductVariant): Record<string, string> {
   if (v.color && !attrs.Color) attrs.Color = v.color;
   if (v.storage && !attrs.Storage) attrs.Storage = v.storage;
   if (v.condition && !attrs.Condition) {
-    attrs.Condition = v.condition === "refurbished" ? "Refurbished" : "New";
+    attrs.Condition =
+      v.condition === "refurbished" ? "Refurbished" : v.condition === "open-box" ? "Open Box" : "New";
   }
   return attrs;
 }

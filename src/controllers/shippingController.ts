@@ -1,13 +1,21 @@
 import { Request, Response } from "express";
 import { ShippingZone } from "../models/ShippingZone";
+import { Cart } from "../models/Cart";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
+import { isZoneFreeShipping } from "../utils/orderPricing";
+import { getCheckoutDeliveryOptions, isShiprocketConfigured } from "../services/shiprocket";
 import {
   addDays,
   formatDeliveryDay,
   isValidIndianPincode,
   lookupPincode,
 } from "../utils/pincodeIndia";
+
+const FALLBACK_DELIVERY_OPTIONS = [
+  { slot: "standard" as const, label: "Standard delivery", courierName: "Standard Courier", rate: 99, estimatedDays: 5 },
+  { slot: "express" as const, label: "Express delivery", courierName: "Express Courier", rate: 149, estimatedDays: 2 },
+];
 
 const DEFAULT_BASE_RATE = 49;
 const DEFAULT_FREE_THRESHOLD = 499;
@@ -159,6 +167,50 @@ export const estimateDelivery = asyncHandler(async (req: Request, res: Response)
         : `Delivery by ${deliveryLabel}`,
     },
   });
+});
+
+/**
+ * Live checkout delivery options (Standard/Express) priced from Shiprocket's courier
+ * serviceability API for the given delivery pincode, using the signed-in user's cart
+ * for package weight. Falls back to flat rates if Shiprocket isn't configured, the
+ * pincode isn't serviceable, or the live call fails — checkout must never be blocked
+ * by a shipping-rate lookup.
+ */
+export const getCheckoutShippingOptions = asyncHandler(async (req: Request, res: Response) => {
+  const postalCode = String(req.query.postalCode || "").trim();
+  if (!isValidIndianPincode(postalCode)) {
+    throw new ApiError(400, "A valid 6-digit pincode is required");
+  }
+  const state = String(req.query.state || "").trim();
+  const subtotal = Number(req.query.subtotal) || 0;
+
+  const cart = await Cart.findOne({ user: req.user!._id.toString() });
+  const qty = cart?.items.reduce((n, item) => n + item.quantity, 0) || 1;
+
+  // Admin-configured free-shipping threshold overrides live rates, same precedence
+  // as order creation (resolveShippingFee).
+  if (state && (await isZoneFreeShipping(state, subtotal))) {
+    const free = FALLBACK_DELIVERY_OPTIONS.map((o) => ({ ...o, rate: 0 }));
+    return res.json({ success: true, data: { source: "zone-free", options: free } });
+  }
+
+  if (!isShiprocketConfigured()) {
+    return res.json({ success: true, data: { source: "fallback", options: FALLBACK_DELIVERY_OPTIONS } });
+  }
+
+  try {
+    const options = await getCheckoutDeliveryOptions(postalCode, qty, false);
+    res.json({ success: true, data: { source: "shiprocket", options } });
+  } catch (err) {
+    res.json({
+      success: true,
+      data: {
+        source: "fallback",
+        options: FALLBACK_DELIVERY_OPTIONS,
+        message: err instanceof Error ? err.message : "Could not fetch live rates",
+      },
+    });
+  }
 });
 
 export const listPublicShippingZones = asyncHandler(async (_req: Request, res: Response) => {

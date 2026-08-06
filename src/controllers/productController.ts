@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { Types } from "mongoose";
 import { Product, ProductStatus } from "../models/Product";
 import { Category } from "../models/Category";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -294,10 +295,14 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   });
 });
 
+/** Product links may use either the Mongo id or the slug (e.g. /product/acer-aspire-15). */
+function findProductByIdOrSlug(idOrSlug: string) {
+  const query = Types.ObjectId.isValid(idOrSlug) ? { _id: idOrSlug } : { slug: idOrSlug };
+  return Product.findOne(query).populate("category", "name slug").populate("brand", "name slug logo");
+}
+
 export const getProduct = asyncHandler(async (req: Request, res: Response) => {
-  const product = await Product.findById(req.params.id)
-    .populate("category", "name slug")
-    .populate("brand", "name slug logo");
+  const product = await findProductByIdOrSlug(req.params.id);
   if (!product) throw new ApiError(404, "Product not found");
   res.json({ success: true, data: productResponse(product) });
 });
@@ -311,7 +316,7 @@ export const getProductBySlug = asyncHandler(async (req: Request, res: Response)
 });
 
 export const getRelatedProducts = asyncHandler(async (req: Request, res: Response) => {
-  const product = await Product.findById(req.params.id);
+  const product = await findProductByIdOrSlug(req.params.id);
   if (!product) throw new ApiError(404, "Product not found");
 
   const related = await Product.find({

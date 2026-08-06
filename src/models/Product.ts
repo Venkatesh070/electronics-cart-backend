@@ -45,7 +45,7 @@ export interface IProductVariant {
   // Legacy fields kept for old documents
   color?: string;
   storage?: string;
-  condition?: "new" | "refurbished";
+  condition?: "new" | "refurbished" | "open-box";
   price?: number;
 }
 
@@ -76,7 +76,7 @@ export interface IProduct extends Document {
   featured: boolean;
   bestSeller: boolean;
   newArrival: boolean;
-  condition: "new" | "refurbished";
+  condition: "new" | "refurbished" | "open-box";
   warranty?: string;
   returnWindowDays?: number;
   deliveryPromise?: string;
@@ -145,7 +145,7 @@ const variantSchema = new Schema(
     // legacy
     color: { type: String },
     storage: { type: String },
-    condition: { type: String, enum: ["new", "refurbished"], default: "new" },
+    condition: { type: String, enum: ["new", "refurbished", "open-box"], default: "new" },
     price: { type: Number, min: 0 },
   },
   { _id: false }
@@ -183,7 +183,7 @@ const productSchema = new Schema<IProduct>(
     featured: { type: Boolean, default: false, index: true },
     bestSeller: { type: Boolean, default: false },
     newArrival: { type: Boolean, default: false },
-    condition: { type: String, enum: ["new", "refurbished"], default: "new", index: true },
+    condition: { type: String, enum: ["new", "refurbished", "open-box"], default: "new", index: true },
     warranty: { type: String },
     returnWindowDays: { type: Number, min: 0 },
     deliveryPromise: { type: String },

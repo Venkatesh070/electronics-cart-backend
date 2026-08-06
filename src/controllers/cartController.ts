@@ -7,7 +7,7 @@ import { Wishlist } from "../models/Wishlist";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { computeCouponDiscount } from "../utils/couponPricing";
-import { computeShippingFee, computeTax } from "../utils/orderPricing";
+import { computeTax, resolveShippingFee } from "../utils/orderPricing";
 import { resolveUnitPrice } from "../utils/variants";
 
 async function getOrCreateCart(userId: string) {
@@ -194,13 +194,29 @@ export const getCartSummary = asyncHandler(async (req: Request, res: Response) =
   }
 
   const state = (req.query.state as string) || "";
-  const shippingFee = state ? await computeShippingFee(state, subtotal - discount) : 0;
+  const postalCode = (req.query.postalCode as string) || "";
+  const deliverySlot = (req.query.deliverySlot as string) || "";
+  const cod = req.query.cod === "true";
+  const qty = cart.items.reduce((n, item) => n + item.quantity, 0);
+  const shippingQuote = state
+    ? await resolveShippingFee({ state, postalCode, subtotal: subtotal - discount, qty, deliverySlot, cod })
+    : { fee: 0, source: "zone" as const, courier: undefined };
+  const shippingFee = shippingQuote.fee;
   const tax = state ? await computeTax(state, undefined, subtotal - discount) : 0;
   const total = Math.max(0, subtotal - discount - giftCardTotal + tax + shippingFee);
 
   res.json({
     success: true,
-    data: { subtotal, discount, giftCardTotal, tax, shippingFee, total, couponCode: cart.couponCode },
+    data: {
+      subtotal,
+      discount,
+      giftCardTotal,
+      tax,
+      shippingFee,
+      shippingCourier: shippingQuote.courier,
+      total,
+      couponCode: cart.couponCode,
+    },
   });
 });
 

@@ -1,7 +1,18 @@
+import fs from "fs";
+import path from "path";
 import { Request, Response } from "express";
 import { User } from "../models/User";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
+import { UPLOAD_ROOT } from "../middleware/upload";
+
+// Best-effort cleanup of a previously-uploaded avatar file so replacing/removing
+// a picture doesn't leave orphaned files behind in uploads/avatars.
+function removeAvatarFile(avatarUrl?: string | null) {
+  if (!avatarUrl || !avatarUrl.startsWith("/uploads/avatars/")) return;
+  const filePath = path.join(UPLOAD_ROOT, avatarUrl.replace("/uploads/", ""));
+  fs.unlink(filePath, () => {});
+}
 
 export const updateProfile = asyncHandler(async (req: Request, res: Response) => {
   const { name, phone, dob } = req.body;
@@ -26,6 +37,31 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
       notificationPreferences: user.notificationPreferences,
     },
   });
+});
+
+export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.file) throw new ApiError(400, "No image file uploaded");
+
+  const user = await User.findById(req.user!._id);
+  if (!user) throw new ApiError(404, "User not found");
+
+  const previousAvatar = user.avatar;
+  user.avatar = `/uploads/avatars/${req.file.filename}`;
+  await user.save();
+  removeAvatarFile(previousAvatar);
+
+  res.json({ success: true, data: { avatar: user.avatar } });
+});
+
+export const removeAvatar = asyncHandler(async (req: Request, res: Response) => {
+  const user = await User.findById(req.user!._id);
+  if (!user) throw new ApiError(404, "User not found");
+
+  removeAvatarFile(user.avatar);
+  user.avatar = undefined;
+  await user.save();
+
+  res.json({ success: true, data: { avatar: null } });
 });
 
 export const changePassword = asyncHandler(async (req: Request, res: Response) => {
