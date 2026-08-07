@@ -89,7 +89,7 @@ export const estimateDelivery = asyncHandler(async (req: Request, res: Response)
   const zone = pincode
     ? await findZoneForPincode(pincode, resolvedState)
     : await ShippingZone.findOne({
-        regions: { $in: [resolvedState, resolvedState.toLowerCase(), "ALL", "India"] },
+        regions: { $in: [resolvedState, resolvedState.toLowerCase(), "ALL", "IN", "India", "PAN-INDIA"] },
         active: true,
       });
 
