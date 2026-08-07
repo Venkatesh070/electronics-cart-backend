@@ -18,6 +18,23 @@ async function getOrCreateCart(userId: string) {
   return cart;
 }
 
+/**
+ * Drops cart lines whose product was deleted after being added — populate() leaves
+ * `product` null in that case. Without this, summary/recommendations crash on the
+ * null deref, and "refresh your cart" (the fix order creation tells the user to do)
+ * would just hit the same crash instead of actually clearing the stale line.
+ */
+async function pruneMissingProducts(cart: InstanceType<typeof Cart>) {
+  const validItems = cart.items.filter(
+    (item) => item.product && typeof item.product === "object" && "_id" in (item.product as object)
+  );
+  if (validItems.length !== cart.items.length) {
+    cart.items = validItems as unknown as typeof cart.items;
+    await cart.save();
+  }
+  return cart;
+}
+
 function sameLine(item: { product: { toString(): string }; variantSku?: string }, productId: string, variantSku?: string) {
   const sku = variantSku ? String(variantSku).toUpperCase() : undefined;
   const itemSku = item.variantSku ? String(item.variantSku).toUpperCase() : undefined;
@@ -27,6 +44,7 @@ function sameLine(item: { product: { toString(): string }; variantSku?: string }
 export const getCart = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!._id.toString());
   await cart.populate("items.product");
+  await pruneMissingProducts(cart);
   res.json({ success: true, data: cart });
 });
 
@@ -131,6 +149,7 @@ export const applyCoupon = asyncHandler(async (req: Request, res: Response) => {
 
   const cart = await getOrCreateCart(req.user!._id.toString());
   await cart.populate("items.product");
+  await pruneMissingProducts(cart);
   if (cart.items.length === 0) throw new ApiError(400, "Cart is empty");
 
   const lines = cart.items.map((item) => {
@@ -162,6 +181,7 @@ export const removeCoupon = asyncHandler(async (req: Request, res: Response) => 
 export const getCartSummary = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!._id.toString());
   await cart.populate("items.product");
+  await pruneMissingProducts(cart);
 
   const lines = cart.items.map((item) => {
     const product = item.product as unknown as Parameters<typeof resolveUnitPrice>[0];
@@ -276,6 +296,7 @@ export const moveToWishlist = asyncHandler(async (req: Request, res: Response) =
 export const getCartRecommendations = asyncHandler(async (req: Request, res: Response) => {
   const cart = await getOrCreateCart(req.user!._id.toString());
   await cart.populate("items.product");
+  await pruneMissingProducts(cart);
 
   const cartProductIds = cart.items.map((i) => i.product._id || i.product);
   const categories = [
