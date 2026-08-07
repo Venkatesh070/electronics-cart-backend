@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { Types } from "mongoose";
 import { Product, ProductStatus } from "../models/Product";
 import { Category } from "../models/Category";
+import { Brand } from "../models/Brand";
 import { asyncHandler } from "../utils/asyncHandler";
 import { ApiError } from "../utils/ApiError";
 import { slugify } from "../utils/slugify";
@@ -239,12 +240,28 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   } = req.query as Record<string, string>;
 
   const filter: Record<string, unknown> = {};
+  let noResults = false;
 
   if (category) {
-    const cat = await Category.findOne({ slug: category });
-    filter.category = cat ? cat._id : category;
+    const cat = Types.ObjectId.isValid(category)
+      ? await Category.findById(category)
+      : await Category.findOne({ slug: category });
+    if (cat) filter.category = cat._id;
+    else noResults = true;
   }
-  if (brand) filter.brand = brand;
+
+  if (brand) {
+    const tokens = brand.split(",").map((b) => b.trim()).filter(Boolean);
+    const idTokens = tokens.filter((b) => Types.ObjectId.isValid(b));
+    const slugTokens = tokens.filter((b) => !Types.ObjectId.isValid(b));
+    const brandDocs = slugTokens.length
+      ? await Brand.find({ slug: { $in: slugTokens } }).select("_id")
+      : [];
+    const brandIds = [...idTokens, ...brandDocs.map((b) => b._id.toString())];
+    if (brandIds.length) filter.brand = { $in: brandIds };
+    else noResults = true;
+  }
+
   if (search) filter.$text = { $search: search };
 
   if (status && status !== "all") {
@@ -277,6 +294,15 @@ export const listProducts = asyncHandler(async (req: Request, res: Response) => 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const sortSpec = SORTS[sort] || SORTS.newest;
+
+  if (noResults) {
+    res.json({
+      success: true,
+      data: [],
+      pagination: { page: pageNum, limit: limitNum, total: 0, pages: 0 },
+    });
+    return;
+  }
 
   const [products, total] = await Promise.all([
     Product.find(filter)

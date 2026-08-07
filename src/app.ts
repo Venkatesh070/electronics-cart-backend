@@ -63,7 +63,10 @@ app.use(cors(corsOptions));
 app.post("/api/payments/razorpay/webhook", express.raw({ type: "application/json" }), razorpayWebhook);
 app.use(express.json());
 app.use(morgan("dev"));
-app.use("/uploads", express.static(UPLOAD_ROOT));
+// maxAge lets the browser reuse cached images on refresh instead of
+// re-fetching multi-MB product photos from disk every time; filenames are
+// timestamp-suffixed on upload so a stale cache never masks a real change.
+app.use("/uploads", express.static(UPLOAD_ROOT, { maxAge: "30d", immutable: true }));
 app.use("/api", apiLimiter);
 
 setupSwagger(app);
