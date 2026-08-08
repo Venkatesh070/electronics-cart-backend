@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit",
-    "seed:admin": "ts-node --transpile-only src/scripts/seedAdmin.ts"
+    "seed:admin": "ts-node --transpile-only src/scripts/seedAdmin.ts",
+    "audit:processor": "ts-node --transpile-only src/scripts/auditProcessorSpecs.ts"
   },
   "license": "MIT",
   "dependencies": {
